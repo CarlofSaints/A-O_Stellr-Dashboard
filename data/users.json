@@ -1,0 +1,37 @@
+[
+  {
+    "id": "1",
+    "name": "Heather Guy",
+    "email": "admin@merchandisinginsa.co.za",
+    "password": "$2b$10$uJMg8QkVJQZ5jtVOVhoQbujSXfz7UCpR9izPclE71mDeu/wlvfScC",
+    "isAdmin": true
+  },
+  {
+    "id": "2",
+    "name": "Marthinus Huyzers",
+    "email": "marthinus@merchandisinginsa.co.za",
+    "password": "$2b$10$uJMg8QkVJQZ5jtVOVhoQbujSXfz7UCpR9izPclE71mDeu/wlvfScC",
+    "isAdmin": false
+  },
+  {
+    "id": "3",
+    "name": "Carl Dos Santos",
+    "email": "carl@outerjoin.co.za",
+    "password": "$2b$10$uJMg8QkVJQZ5jtVOVhoQbujSXfz7UCpR9izPclE71mDeu/wlvfScC",
+    "isAdmin": true
+  },
+  {
+    "id": "4",
+    "name": "Charles Moloto",
+    "email": "charles@outerjoin.co.za",
+    "password": "$2b$10$uJMg8QkVJQZ5jtVOVhoQbujSXfz7UCpR9izPclE71mDeu/wlvfScC",
+    "isAdmin": false
+  },
+  {
+    "id": "5",
+    "name": "Laurette Phakath",
+    "email": "laurette@outerjoin.co.za",
+    "password": "$2b$10$uJMg8QkVJQZ5jtVOVhoQbujSXfz7UCpR9izPclE71mDeu/wlvfScC",
+    "isAdmin": false
+  }
+]
