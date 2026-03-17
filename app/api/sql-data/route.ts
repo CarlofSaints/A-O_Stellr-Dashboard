@@ -5,6 +5,9 @@ import type { ParseResult } from '@/lib/types';
 
 const CLIENT_ID = 16; // MerchandisingSA (A&O)
 
+// Stellr form IDs in dashboardFormsExpanded
+const STELLR_FORM_IDS = [1199, 1204, 1205, 1208, 1213, 1216, 1223];
+
 const BASE_HEADERS = [
   'Visit UUID', 'Channel', 'Store Name', 'Store Code',
   'Rep Name', 'Date', 'Check In', 'Check Out', 'Duration (hrs)', 'Status',
@@ -22,19 +25,22 @@ export async function GET(req: NextRequest) {
   try {
     const pool = getPool();
 
-    // ── 1. Visit rows ──────────────────────────────────────────────────────────
+    // ── 1. Visit rows (include hidden join keys _storeId/_peopleId/_visitDate) ──
     const [visitRows] = await pool.query<RowDataPacket[]>(
       `SELECT
-         v.visitUUID                                  AS \`Visit UUID\`,
-         s.channelName                                AS \`Channel\`,
-         s.name                                       AS \`Store Name\`,
-         s.storeCode                                  AS \`Store Code\`,
-         CONCAT(p.firstName, ' ', p.lastName)         AS \`Rep Name\`,
-         DATE_FORMAT(v.datOfVisit, '%d/%m/%Y')        AS \`Date\`,
-         DATE_FORMAT(v.visitStart, '%H:%i')           AS \`Check In\`,
-         DATE_FORMAT(v.visitEnd,   '%H:%i')           AS \`Check Out\`,
+         v.storeID                                     AS _storeId,
+         v.peopleID                                    AS _peopleId,
+         DATE_FORMAT(v.datOfVisit, '%Y-%m-%d')         AS _visitDate,
+         v.visitUUID                                   AS \`Visit UUID\`,
+         s.channelName                                 AS \`Channel\`,
+         s.name                                        AS \`Store Name\`,
+         s.storeCode                                   AS \`Store Code\`,
+         CONCAT(p.firstName, ' ', p.lastName)          AS \`Rep Name\`,
+         DATE_FORMAT(v.datOfVisit, '%d/%m/%Y')         AS \`Date\`,
+         DATE_FORMAT(v.visitStart, '%H:%i')            AS \`Check In\`,
+         DATE_FORMAT(v.visitEnd,   '%H:%i')            AS \`Check Out\`,
          ROUND(TIMESTAMPDIFF(MINUTE, v.visitStart, v.visitEnd) / 60.0, 1) AS \`Duration (hrs)\`,
-         v.status                                     AS \`Status\`
+         v.status                                      AS \`Status\`
        FROM dashboardVisits v
        JOIN dashboardStores  s ON s.id = v.storeID
        JOIN dashboardPeople  p ON p.id = v.peopleID
@@ -50,13 +56,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ headers: BASE_HEADERS, rows: [], imageColumns: [] } as ParseResult);
     }
 
-    // ── 2. Form responses — join on responseUUID = visitUUID ──────────────────
-    const visitUUIDs = visitRows.map(v => v['Visit UUID'] as string).filter(Boolean);
-    const placeholders = visitUUIDs.map(() => '?').join(',');
+    // ── 2. Form responses — joined via storeID + peopleID + date ──────────────
+    const formIdPlaceholders = STELLR_FORM_IDS.map(() => '?').join(',');
 
     const [formRows] = await pool.query<RowDataPacket[]>(
       `SELECT
-         responseUUID,
+         storeID,
+         peopleID,
+         DATE_FORMAT(captureDate, '%Y-%m-%d')  AS visitDate,
          questionOrder,
          question,
          COALESCE(
@@ -65,26 +72,27 @@ export async function GET(req: NextRequest) {
            CAST(answerTypeNumeric AS CHAR)
          ) AS answer
        FROM dashboardFormsExpanded
-       WHERE clientID = ?
-         AND responseUUID IN (${placeholders})
-       ORDER BY responseUUID, questionOrder`,
-      [CLIENT_ID, ...visitUUIDs],
+       WHERE formID IN (${formIdPlaceholders})
+         AND captureDate >= ?
+         AND captureDate  < DATE_ADD(?, INTERVAL 1 DAY)
+       ORDER BY storeID, peopleID, visitDate, questionOrder`,
+      [...STELLR_FORM_IDS, dateFrom, dateTo],
     );
 
-    // ── 3. Pivot: build visitUUID → { question: answer } + ordered question list
-    const formMap        = new Map<string, Record<string, string | null>>();
-    const questionOrder  = new Map<string, number>(); // question → min order seen
+    // ── 3. Pivot: storeID|peopleID|date → { question: answer } ────────────────
+    const formMap       = new Map<string, Record<string, string | null>>();
+    const questionOrder = new Map<string, number>();
     const imageQuestions = new Set<string>();
 
     for (const row of formRows) {
-      const uuid = String(row.responseUUID ?? '');
-      const q    = String(row.question    ?? '').trim();
-      const a    = row.answer != null ? String(row.answer) : null;
+      const key = `${row.storeID}|${row.peopleID}|${row.visitDate}`;
+      const q   = String(row.question ?? '').trim();
+      const a   = row.answer != null ? String(row.answer) : null;
 
-      if (!uuid || !q) continue;
+      if (!q) continue;
 
-      if (!formMap.has(uuid)) formMap.set(uuid, {});
-      formMap.get(uuid)![q] = a;
+      if (!formMap.has(key)) formMap.set(key, {});
+      formMap.get(key)![q] = a;
 
       if (!questionOrder.has(q)) questionOrder.set(q, Number(row.questionOrder ?? 999));
       if (a && a.startsWith('https://')) imageQuestions.add(q);
@@ -94,13 +102,13 @@ export async function GET(req: NextRequest) {
       .sort((a, b) => a[1] - b[1])
       .map(([q]) => q);
 
-    // ── 4. Assemble final rows ─────────────────────────────────────────────────
+    // ── 4. Build final rows ───────────────────────────────────────────────────
     const headers      = [...BASE_HEADERS, ...allQuestions];
     const imageColumns = [...imageQuestions];
 
     const rows = visitRows.map(v => {
-      const uuid        = String(v['Visit UUID'] ?? '');
-      const formAnswers = formMap.get(uuid) ?? {};
+      const key         = `${v._storeId}|${v._peopleId}|${v._visitDate}`;
+      const formAnswers = formMap.get(key) ?? {};
       const out: Record<string, string | number | null> = {};
       for (const h of BASE_HEADERS) out[h] = (v[h] as string | number | null) ?? null;
       for (const q of allQuestions)  out[q] = formAnswers[q] ?? null;
