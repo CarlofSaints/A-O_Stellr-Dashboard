@@ -6,7 +6,7 @@ import type { ParseResult } from '@/lib/types';
 const CLIENT_ID = 16; // MerchandisingSA (A&O)
 
 // Stellr form IDs in dashboardFormsExpanded
-const STELLR_FORM_IDS = [1199, 1204, 1205, 1208, 1213, 1216, 1223];
+const STELLR_FORM_IDS = [1199, 1204, 1205, 1208, 1213, 1214, 1223];
 
 const BASE_HEADERS = [
   'Visit UUID', 'Channel', 'Store Name', 'Store Code',
