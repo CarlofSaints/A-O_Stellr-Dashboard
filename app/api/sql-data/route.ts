@@ -9,8 +9,7 @@ const CLIENT_ID = 16; // MerchandisingSA (A&O)
 const STELLR_FORM_IDS = [1199, 1204, 1205, 1208, 1213, 1214, 1223];
 
 const BASE_HEADERS = [
-  'Visit UUID', 'Channel', 'Store Name', 'Store Code',
-  'Rep Name', 'Date', 'Check In', 'Check Out', 'Duration (hrs)', 'Status',
+  'Visit UUID', 'Channel', 'Store Name', 'Store Code', 'Rep Name', 'Date',
 ];
 
 export async function GET(req: NextRequest) {
@@ -36,11 +35,7 @@ export async function GET(req: NextRequest) {
          s.name                                        AS \`Store Name\`,
          s.storeCode                                   AS \`Store Code\`,
          CONCAT(p.firstName, ' ', p.lastName)          AS \`Rep Name\`,
-         DATE_FORMAT(v.datOfVisit, '%d/%m/%Y')         AS \`Date\`,
-         DATE_FORMAT(v.visitStart, '%H:%i')            AS \`Check In\`,
-         DATE_FORMAT(v.visitEnd,   '%H:%i')            AS \`Check Out\`,
-         ROUND(TIMESTAMPDIFF(MINUTE, v.visitStart, v.visitEnd) / 60.0, 1) AS \`Duration (hrs)\`,
-         v.status                                      AS \`Status\`
+         DATE_FORMAT(v.datOfVisit, '%d/%m/%Y')         AS \`Date\`
        FROM dashboardVisits v
        JOIN dashboardStores  s ON s.id = v.storeID
        JOIN dashboardPeople  p ON p.id = v.peopleID
