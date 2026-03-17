@@ -22,13 +22,9 @@ export async function GET(req: NextRequest) {
   try {
     const pool = getPool();
 
-    // ── 1. Main visit query ────────────────────────────────────────────────────
-    // Include raw _storeId / _peopleId / _visitDate for image matching (stripped before response)
+    // ── 1. Visit rows ──────────────────────────────────────────────────────────
     const [visitRows] = await pool.query<RowDataPacket[]>(
       `SELECT
-         DATE_FORMAT(v.datOfVisit, '%Y-%m-%d')       AS _visitDate,
-         v.storeID                                    AS _storeId,
-         v.peopleID                                   AS _peopleId,
          v.visitUUID                                  AS \`Visit UUID\`,
          s.channelName                                AS \`Channel\`,
          s.name                                       AS \`Store Name\`,
@@ -50,62 +46,68 @@ export async function GET(req: NextRequest) {
       [CLIENT_ID, dateFrom, dateTo],
     );
 
-    // ── 2. Image URL query (from form responses) ───────────────────────────────
-    // captureDate is datetime; range bounds use sargable comparison to allow index use
-    let imageRows: RowDataPacket[] = [];
-    try {
-      const [rows] = await pool.query<RowDataPacket[]>(
-        `SELECT DISTINCT
-           storeID,
-           peopleID,
-           DATE_FORMAT(captureDate, '%Y-%m-%d') AS visitDate,
-           answerTypeBigString                  AS imageUrl
-         FROM dashboardFormsExpanded
-         WHERE clientID  = ?
-           AND captureDate >= ?
-           AND captureDate  < DATE_ADD(?, INTERVAL 1 DAY)
-           AND answerTypeBigString LIKE 'https://%'
-         ORDER BY storeID, peopleID, visitDate`,
-        [CLIENT_ID, dateFrom, dateTo],
-      );
-      imageRows = rows;
-    } catch (imgErr) {
-      // Image query failure is non-fatal — return visits without images
-      console.warn('[sql-data] image query failed:', imgErr);
+    if (visitRows.length === 0) {
+      return NextResponse.json({ headers: BASE_HEADERS, rows: [], imageColumns: [] } as ParseResult);
     }
 
-    // ── 3. Build storeId|peopleId|date → imageUrl[] map ───────────────────────
-    const imageMap = new Map<string, string[]>();
-    for (const row of imageRows) {
-      const key = `${row.storeID}|${row.peopleID}|${row.visitDate}`;
-      const bucket = imageMap.get(key) ?? [];
-      if (!bucket.includes(row.imageUrl as string)) bucket.push(row.imageUrl as string);
-      imageMap.set(key, bucket);
+    // ── 2. Form responses — join on responseUUID = visitUUID ──────────────────
+    const visitUUIDs = visitRows.map(v => v['Visit UUID'] as string).filter(Boolean);
+    const placeholders = visitUUIDs.map(() => '?').join(',');
+
+    const [formRows] = await pool.query<RowDataPacket[]>(
+      `SELECT
+         responseUUID,
+         questionOrder,
+         question,
+         COALESCE(
+           NULLIF(answerTypeBigString, ''),
+           NULLIF(answerTypeString, ''),
+           CAST(answerTypeNumeric AS CHAR)
+         ) AS answer
+       FROM dashboardFormsExpanded
+       WHERE clientID = ?
+         AND responseUUID IN (${placeholders})
+       ORDER BY responseUUID, questionOrder`,
+      [CLIENT_ID, ...visitUUIDs],
+    );
+
+    // ── 3. Pivot: build visitUUID → { question: answer } + ordered question list
+    const formMap        = new Map<string, Record<string, string | null>>();
+    const questionOrder  = new Map<string, number>(); // question → min order seen
+    const imageQuestions = new Set<string>();
+
+    for (const row of formRows) {
+      const uuid = String(row.responseUUID ?? '');
+      const q    = String(row.question    ?? '').trim();
+      const a    = row.answer != null ? String(row.answer) : null;
+
+      if (!uuid || !q) continue;
+
+      if (!formMap.has(uuid)) formMap.set(uuid, {});
+      formMap.get(uuid)![q] = a;
+
+      if (!questionOrder.has(q)) questionOrder.set(q, Number(row.questionOrder ?? 999));
+      if (a && a.startsWith('https://')) imageQuestions.add(q);
     }
 
-    // ── 4. Determine how many image columns are needed (cap at 10) ─────────────
-    let maxImages = 0;
-    for (const v of visitRows) {
-      const key = `${v._storeId}|${v._peopleId}|${v._visitDate}`;
-      maxImages = Math.max(maxImages, (imageMap.get(key) ?? []).length);
-    }
-    maxImages = Math.min(maxImages, 10);
+    const allQuestions = [...questionOrder.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(([q]) => q);
 
-    // ── 5. Assemble final rows & headers ──────────────────────────────────────
-    const imageCols = Array.from({ length: maxImages }, (_, i) => `Image ${i + 1}`);
-    const headers   = [...BASE_HEADERS, ...imageCols];
+    // ── 4. Assemble final rows ─────────────────────────────────────────────────
+    const headers      = [...BASE_HEADERS, ...allQuestions];
+    const imageColumns = [...imageQuestions];
 
     const rows = visitRows.map(v => {
-      const key  = `${v._storeId}|${v._peopleId}|${v._visitDate}`;
-      const urls = imageMap.get(key) ?? [];
+      const uuid        = String(v['Visit UUID'] ?? '');
+      const formAnswers = formMap.get(uuid) ?? {};
       const out: Record<string, string | number | null> = {};
       for (const h of BASE_HEADERS) out[h] = (v[h] as string | number | null) ?? null;
-      for (let i = 0; i < maxImages; i++) out[`Image ${i + 1}`] = urls[i] ?? null;
+      for (const q of allQuestions)  out[q] = formAnswers[q] ?? null;
       return out;
     });
 
-    const result: ParseResult = { headers, rows, imageColumns: imageCols };
-    return NextResponse.json(result);
+    return NextResponse.json({ headers, rows, imageColumns } as ParseResult);
 
   } catch (e) {
     console.error('[sql-data]', e);

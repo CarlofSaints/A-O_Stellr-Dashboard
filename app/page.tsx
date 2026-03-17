@@ -324,6 +324,18 @@ export default function Dashboard() {
   const [sqlDateTo,   setSqlDateTo]   = useState(fmtDate(today));
   const [sqlLoading,  setSqlLoading]  = useState(false);
 
+  // Dual-scroll sync refs
+  const tableScrollRef  = useRef<HTMLDivElement>(null);
+  const bottomScrollRef = useRef<HTMLDivElement>(null);
+  const onTableScroll  = useCallback(() => {
+    if (bottomScrollRef.current && tableScrollRef.current)
+      bottomScrollRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
+  }, []);
+  const onBottomScroll = useCallback(() => {
+    if (tableScrollRef.current && bottomScrollRef.current)
+      tableScrollRef.current.scrollLeft = bottomScrollRef.current.scrollLeft;
+  }, []);
+
   // Column widths — keyed by column key string
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
   const gw = useCallback((key: string, def: number) => colWidths[key] ?? def, [colWidths]);
@@ -512,6 +524,13 @@ export default function Dashboard() {
       setSqlLoading(false);
     }
   }, [sqlDateFrom, sqlDateTo]);
+  // Auto-refresh every 2 hours in SQL mode
+  useEffect(() => {
+    if (dataMode !== 'sql' || loadedFiles.length === 0) return;
+    const id = setInterval(() => { if (!sqlLoading) loadSqlData(); }, 2 * 60 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [dataMode, loadedFiles.length, sqlLoading, loadSqlData]);
+
   const clearFilters = () => {
     setSelChannels(allChannels); setSelProvinces(allProvinces);
     setSelReps(allReps);         setSelSources(allSources);
@@ -523,7 +542,7 @@ export default function Dashboard() {
   if (!authChecked) return null;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen" style={{ backgroundImage: "url('/stellr-bg.jpg')", backgroundSize: 'cover', backgroundAttachment: 'fixed', backgroundPosition: 'center' }}>
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-3 shadow-sm">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
@@ -544,7 +563,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="flex items-center gap-5">
-            <Image src="/perigee-logo.jpg" alt="Perigee" width={72} height={28} className="object-contain rounded" />
+            <Image src="/stellr-logo.png" alt="Stellr" width={110} height={34} className="object-contain" />
             <div className="h-6 w-px bg-gray-200" />
             <div className="text-right">
               <p className="text-[#1B3A6B] text-xs font-semibold">{session?.name}</p>
@@ -782,7 +801,12 @@ export default function Dashboard() {
                 </p>
                 <p className="text-xs text-gray-400">Drag column edges to resize</p>
               </div>
-              <div className="overflow-x-auto overflow-y-auto" style={{ maxHeight: '70vh' }}>
+              <div
+                ref={tableScrollRef}
+                onScroll={onTableScroll}
+                className="hide-scrollbar"
+                style={{ overflowX: 'scroll', overflowY: 'auto', maxHeight: '70vh' }}
+              >
                 <table
                   className="text-sm border-collapse"
                   style={{ tableLayout: 'fixed', width: `${totalTableW}px` }}
@@ -853,7 +877,7 @@ export default function Dashboard() {
                             {storeCol && (
                               <td
                                 style={{ position: 'sticky', left: `${storeLeft}px`, width: `${storeW}px`, zIndex: 10 }}
-                                className={`px-3 py-2 font-medium text-gray-800 whitespace-nowrap ${rowBg}`}
+                                className={`px-3 py-2 font-medium text-gray-800 break-words ${rowBg}`}
                               >
                                 {row[storeCol] != null && row[storeCol] !== ''
                                   ? String(row[storeCol])
@@ -904,12 +928,25 @@ export default function Dashboard() {
                   </tbody>
                 </table>
               </div>
+              {/* Always-visible horizontal scrollbar */}
+              <div
+                ref={bottomScrollRef}
+                onScroll={onBottomScroll}
+                style={{ overflowX: 'scroll', overflowY: 'hidden', borderTop: '1px solid #e5e7eb' }}
+              >
+                <div style={{ width: `${totalTableW}px`, height: '1px' }} />
+              </div>
             </div>
           </>
         )}
       </main>
 
       {lightboxUrl && <Lightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />}
+
+      {/* Perigee logo — fixed bottom right */}
+      <div className="fixed bottom-4 right-4 z-50 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-2 shadow-md">
+        <Image src="/perigee-logo.jpg" alt="Perigee" width={72} height={28} className="object-contain rounded" />
+      </div>
     </div>
   );
 }
