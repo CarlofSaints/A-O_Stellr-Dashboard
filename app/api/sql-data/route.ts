@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
   try {
     const pool = getPool();
 
-    // ── 1. Visit rows ────────────────────────────────────────────────────────
+    // ── 1. Visit rows (uses idx_client_date) ─────────────────────────────────
     const [visitRows] = await pool.query<RowDataPacket[]>(
       `SELECT
          v.storeID                                     AS _storeId,
@@ -51,11 +51,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ headers: BASE_HEADERS, rows: [], imageColumns: [] } as ParseResult);
     }
 
-    // ── 2. Form responses — JOIN against matching visits only ────────────────
-    // Rather than scanning all form rows for the date range, we join directly
-    // against the visits we already have. MySQL resolves the small visit set
-    // first and only looks up form rows for those exact store/rep/date combos.
-    const formIdPlaceholders = STELLR_FORM_IDS.map(() => '?').join(',');
+    // ── 2. Form responses — NO JOIN, filter by storeID/peopleID IN lists ─────
+    // Avoids the DATE() function in the JOIN which prevented index usage.
+    // We extract the unique storeID + peopleID pairs from the visits we already
+    // have and pass them directly — each query uses its own index cleanly.
+    const uniqueStoreIds  = [...new Set(visitRows.map(v => v._storeId  as number))];
+    const uniquePeopleIds = [...new Set(visitRows.map(v => v._peopleId as number))];
+
+    const formIdPlaceholders    = STELLR_FORM_IDS.map(() => '?').join(',');
+    const storeIdPlaceholders   = uniqueStoreIds.map(() => '?').join(',');
+    const peopleIdPlaceholders  = uniquePeopleIds.map(() => '?').join(',');
 
     const [formRows] = await pool.query<RowDataPacket[]>(
       `SELECT
@@ -70,18 +75,13 @@ export async function GET(req: NextRequest) {
            CAST(f.answerTypeNumeric AS CHAR)
          ) AS answer
        FROM dashboardFormsExpanded f
-       INNER JOIN dashboardVisits v
-         ON  v.storeID  = f.storeID
-         AND v.peopleID = f.peopleID
-         AND DATE(v.datOfVisit) = DATE(f.captureDate)
-         AND v.clientID    = ?
-         AND v.datOfVisit >= ?
-         AND v.datOfVisit <= ?
-       WHERE f.formID IN (${formIdPlaceholders})
+       WHERE f.formID    IN (${formIdPlaceholders})
          AND f.captureDate >= ?
          AND f.captureDate  < DATE_ADD(?, INTERVAL 1 DAY)
+         AND f.storeID   IN (${storeIdPlaceholders})
+         AND f.peopleID  IN (${peopleIdPlaceholders})
        ORDER BY f.storeID, f.peopleID, visitDate, f.questionOrder`,
-      [CLIENT_ID, dateFrom, dateTo, ...STELLR_FORM_IDS, dateFrom, dateTo],
+      [...STELLR_FORM_IDS, dateFrom, dateTo, ...uniqueStoreIds, ...uniquePeopleIds],
     );
 
     // ── 3. Pivot: storeID|peopleID|date → { question: answer } ────────────────
