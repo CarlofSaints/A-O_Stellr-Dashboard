@@ -1,22 +1,28 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
 
-  // Pre-warm the SQL cache 3 seconds after server starts so the first user
-  // doesn't hit the slow MySQL query.
-  setTimeout(async () => {
+  async function warmDefault() {
     try {
       const { fetchAndCache } = await import('@/lib/sql-cache');
 
-      const today      = new Date();
-      const dateTo     = today.toISOString().split('T')[0];
-      const dateFrom   = new Date(today.setDate(today.getDate() - 6))
-                           .toISOString().split('T')[0];
+      // Match the frontend's date calculation exactly (today - 7 days)
+      const today    = new Date();
+      const dateTo   = today.toISOString().split('T')[0];
+      const sevenAgo = new Date(today);
+      sevenAgo.setDate(today.getDate() - 7);
+      const dateFrom = sevenAgo.toISOString().split('T')[0];
 
-      console.log(`[warmup] pre-warming cache for ${dateFrom} to ${dateTo}…`);
+      console.log(`[warmup] refreshing cache for ${dateFrom} to ${dateTo}…`);
       await fetchAndCache(dateFrom, dateTo);
       console.log(`[warmup] cache ready`);
     } catch (e) {
       console.error('[warmup] failed:', e);
     }
-  }, 3000);
+  }
+
+  // Warm on startup after 3 seconds
+  setTimeout(warmDefault, 3000);
+
+  // Refresh every 10 minutes so the cache never goes cold
+  setInterval(warmDefault, 10 * 60 * 1000);
 }
