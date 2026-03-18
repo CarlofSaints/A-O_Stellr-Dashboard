@@ -23,6 +23,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const pool = getPool();
+    const t0 = Date.now();
 
     // ── 1. Visit rows (uses idx_client_date) ─────────────────────────────────
     const [visitRows] = await pool.query<RowDataPacket[]>(
@@ -46,6 +47,8 @@ export async function GET(req: NextRequest) {
        LIMIT 2000`,
       [CLIENT_ID, dateFrom, dateTo],
     );
+
+    console.log(`[sql-data] visit query: ${Date.now() - t0}ms, ${visitRows.length} rows`);
 
     if (visitRows.length === 0) {
       return NextResponse.json({ headers: BASE_HEADERS, rows: [], imageColumns: [] } as ParseResult);
@@ -84,6 +87,8 @@ export async function GET(req: NextRequest) {
       [...STELLR_FORM_IDS, dateFrom, dateTo, ...uniqueStoreIds, ...uniquePeopleIds],
     );
 
+    console.log(`[sql-data] form query: ${Date.now() - t0}ms, ${formRows.length} rows`);
+
     // ── 3. Pivot: storeID|peopleID|date → { question: answer } ────────────────
     const formMap        = new Map<string, Record<string, string | null>>();
     const questionOrder  = new Map<string, number>();
@@ -120,6 +125,7 @@ export async function GET(req: NextRequest) {
       return out;
     });
 
+    console.log(`[sql-data] total: ${Date.now() - t0}ms`);
     return NextResponse.json({ headers, rows, imageColumns } as ParseResult);
 
   } catch (e) {
