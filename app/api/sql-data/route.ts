@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
   try {
     const pool = getPool();
 
-    // ── 1. Visit rows (include hidden join keys _storeId/_peopleId/_visitDate) ──
+    // ── 1. Visit rows ────────────────────────────────────────────────────────
     const [visitRows] = await pool.query<RowDataPacket[]>(
       `SELECT
          v.storeID                                     AS _storeId,
@@ -51,32 +51,42 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ headers: BASE_HEADERS, rows: [], imageColumns: [] } as ParseResult);
     }
 
-    // ── 2. Form responses — joined via storeID + peopleID + date ──────────────
+    // ── 2. Form responses — JOIN against matching visits only ────────────────
+    // Rather than scanning all form rows for the date range, we join directly
+    // against the visits we already have. MySQL resolves the small visit set
+    // first and only looks up form rows for those exact store/rep/date combos.
     const formIdPlaceholders = STELLR_FORM_IDS.map(() => '?').join(',');
 
     const [formRows] = await pool.query<RowDataPacket[]>(
       `SELECT
-         storeID,
-         peopleID,
-         DATE_FORMAT(captureDate, '%Y-%m-%d')  AS visitDate,
-         questionOrder,
-         question,
+         f.storeID,
+         f.peopleID,
+         DATE_FORMAT(f.captureDate, '%Y-%m-%d')  AS visitDate,
+         f.questionOrder,
+         f.question,
          COALESCE(
-           NULLIF(answerTypeBigString, ''),
-           NULLIF(answerTypeString, ''),
-           CAST(answerTypeNumeric AS CHAR)
+           NULLIF(f.answerTypeBigString, ''),
+           NULLIF(f.answerTypeString, ''),
+           CAST(f.answerTypeNumeric AS CHAR)
          ) AS answer
-       FROM dashboardFormsExpanded
-       WHERE formID IN (${formIdPlaceholders})
-         AND captureDate >= ?
-         AND captureDate  < DATE_ADD(?, INTERVAL 1 DAY)
-       ORDER BY storeID, peopleID, visitDate, questionOrder`,
-      [...STELLR_FORM_IDS, dateFrom, dateTo],
+       FROM dashboardFormsExpanded f
+       INNER JOIN dashboardVisits v
+         ON  v.storeID  = f.storeID
+         AND v.peopleID = f.peopleID
+         AND DATE(v.datOfVisit) = DATE(f.captureDate)
+         AND v.clientID    = ?
+         AND v.datOfVisit >= ?
+         AND v.datOfVisit <= ?
+       WHERE f.formID IN (${formIdPlaceholders})
+         AND f.captureDate >= ?
+         AND f.captureDate  < DATE_ADD(?, INTERVAL 1 DAY)
+       ORDER BY f.storeID, f.peopleID, visitDate, f.questionOrder`,
+      [CLIENT_ID, dateFrom, dateTo, ...STELLR_FORM_IDS, dateFrom, dateTo],
     );
 
     // ── 3. Pivot: storeID|peopleID|date → { question: answer } ────────────────
-    const formMap       = new Map<string, Record<string, string | null>>();
-    const questionOrder = new Map<string, number>();
+    const formMap        = new Map<string, Record<string, string | null>>();
+    const questionOrder  = new Map<string, number>();
     const imageQuestions = new Set<string>();
 
     for (const row of formRows) {

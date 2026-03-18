@@ -309,7 +309,7 @@ export default function Dashboard() {
   const [authChecked, setAuthChecked] = useState(false);
   const router = useRouter();
 
-  const [dataMode, setDataMode] = useState<'excel' | 'sql'>('excel');
+  const [dataMode, setDataMode] = useState<'excel' | 'sql'>('sql');
   const [loadedFiles, setLoadedFiles] = useState<LoadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -318,9 +318,9 @@ export default function Dashboard() {
 
   // SQL mode state
   const today = new Date();
-  const thirtyAgo = new Date(today); thirtyAgo.setDate(today.getDate() - 30);
+  const sevenAgo = new Date(today); sevenAgo.setDate(today.getDate() - 7);
   const fmtDate = (d: Date) => d.toISOString().slice(0, 10);
-  const [sqlDateFrom, setSqlDateFrom] = useState(fmtDate(thirtyAgo));
+  const [sqlDateFrom, setSqlDateFrom] = useState(fmtDate(sevenAgo));
   const [sqlDateTo,   setSqlDateTo]   = useState(fmtDate(today));
   const [sqlLoading,  setSqlLoading]  = useState(false);
 
@@ -357,6 +357,15 @@ export default function Dashboard() {
     setSession(JSON.parse(raw));
     setAuthChecked(true);
   }, [router]);
+
+  // Auto-load SQL data on first render once auth is confirmed
+  const autoLoaded = useRef(false);
+  useEffect(() => {
+    if (authChecked && !autoLoaded.current) {
+      autoLoaded.current = true;
+      loadSqlData();
+    }
+  }, [authChecked, loadSqlData]);
 
   const handleLogout = () => {
     localStorage.removeItem('ao_session');
