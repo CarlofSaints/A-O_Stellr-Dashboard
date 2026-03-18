@@ -8,6 +8,10 @@ const CLIENT_ID = 16; // MerchandisingSA (A&O)
 // Stellr form IDs in dashboardFormsExpanded
 const STELLR_FORM_IDS = [1199, 1204, 1205, 1208, 1213, 1214, 1223];
 
+// ── In-memory cache (5 min TTL) ───────────────────────────────────────────────
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const cache = new Map<string, { data: ParseResult; expiresAt: number }>();
+
 const BASE_HEADERS = [
   'Visit UUID', 'Channel', 'Store Name', 'Store Code', 'Rep Name', 'Date',
 ];
@@ -22,6 +26,13 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    const cacheKey = `${dateFrom}|${dateTo}`;
+    const cached   = cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      console.log(`[sql-data] cache hit for ${cacheKey}`);
+      return NextResponse.json(cached.data);
+    }
+
     const pool = getPool();
     const t0 = Date.now();
 
@@ -125,8 +136,10 @@ export async function GET(req: NextRequest) {
       return out;
     });
 
-    console.log(`[sql-data] total: ${Date.now() - t0}ms`);
-    return NextResponse.json({ headers, rows, imageColumns } as ParseResult);
+    const result: ParseResult = { headers, rows, imageColumns };
+    cache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
+    console.log(`[sql-data] total: ${Date.now() - t0}ms — cached for 5 min`);
+    return NextResponse.json(result);
 
   } catch (e) {
     console.error('[sql-data]', e);
