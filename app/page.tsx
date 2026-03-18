@@ -358,14 +358,6 @@ export default function Dashboard() {
     setAuthChecked(true);
   }, [router]);
 
-  // Auto-load SQL data on first render once auth is confirmed
-  const autoLoaded = useRef(false);
-  useEffect(() => {
-    if (authChecked && !autoLoaded.current) {
-      autoLoaded.current = true;
-      loadSqlData();
-    }
-  }, [authChecked, loadSqlData]);
 
   const handleLogout = () => {
     localStorage.removeItem('ao_session');
@@ -533,6 +525,15 @@ export default function Dashboard() {
       setSqlLoading(false);
     }
   }, [sqlDateFrom, sqlDateTo]);
+  // Auto-load SQL data on first render once auth is confirmed
+  const autoLoaded = useRef(false);
+  useEffect(() => {
+    if (authChecked && !autoLoaded.current) {
+      autoLoaded.current = true;
+      loadSqlData();
+    }
+  }, [authChecked, loadSqlData]);
+
   // Auto-refresh every 2 hours in SQL mode
   useEffect(() => {
     if (dataMode !== 'sql' || loadedFiles.length === 0) return;
