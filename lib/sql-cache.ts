@@ -4,7 +4,7 @@ import type { ParseResult } from '@/lib/types';
 
 const CLIENT_ID      = 16;
 const STELLR_FORM_IDS = [1199, 1204, 1205, 1208, 1213, 1214, 1223];
-const CACHE_TTL_MS   = 15 * 60 * 1000; // 15 minutes
+const CACHE_TTL_MS   = 60 * 60 * 1000; // 1 hour
 
 const BASE_HEADERS = [
   'Visit UUID', 'Channel', 'Store Name', 'Store Code', 'Rep Name', 'Date',
