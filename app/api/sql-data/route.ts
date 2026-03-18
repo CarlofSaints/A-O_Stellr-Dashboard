@@ -1,20 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import type { RowDataPacket } from 'mysql2';
-import { getPool } from '@/lib/db';
+import { fetchAndCache, cache } from '@/lib/sql-cache';
 import type { ParseResult } from '@/lib/types';
-
-const CLIENT_ID = 16; // MerchandisingSA (A&O)
-
-// Stellr form IDs in dashboardFormsExpanded
-const STELLR_FORM_IDS = [1199, 1204, 1205, 1208, 1213, 1214, 1223];
-
-// ── In-memory cache (5 min TTL) ───────────────────────────────────────────────
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const cache = new Map<string, { data: ParseResult; expiresAt: number }>();
-
-const BASE_HEADERS = [
-  'Visit UUID', 'Channel', 'Store Name', 'Store Code', 'Rep Name', 'Date',
-];
 
 export async function GET(req: NextRequest) {
   const sp       = req.nextUrl.searchParams;
@@ -27,120 +13,11 @@ export async function GET(req: NextRequest) {
 
   try {
     const cacheKey = `${dateFrom}|${dateTo}`;
-    const cached   = cache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
+    if (cache.get(cacheKey)?.expiresAt ?? 0 > Date.now()) {
       console.log(`[sql-data] cache hit for ${cacheKey}`);
-      return NextResponse.json(cached.data);
     }
-
-    const pool = getPool();
-    const t0 = Date.now();
-
-    // ── 1. Visit rows (uses idx_client_date) ─────────────────────────────────
-    const [visitRows] = await pool.query<RowDataPacket[]>(
-      `SELECT
-         v.storeID                                     AS _storeId,
-         v.peopleID                                    AS _peopleId,
-         DATE_FORMAT(v.datOfVisit, '%Y-%m-%d')         AS _visitDate,
-         v.visitUUID                                   AS \`Visit UUID\`,
-         s.channelName                                 AS \`Channel\`,
-         s.name                                        AS \`Store Name\`,
-         s.storeCode                                   AS \`Store Code\`,
-         CONCAT(p.firstName, ' ', p.lastName)          AS \`Rep Name\`,
-         DATE_FORMAT(v.datOfVisit, '%d/%m/%Y')         AS \`Date\`
-       FROM dashboardVisits v
-       JOIN dashboardStores  s ON s.id = v.storeID
-       JOIN dashboardPeople  p ON p.id = v.peopleID
-       WHERE v.clientID    = ?
-         AND v.datOfVisit >= ?
-         AND v.datOfVisit <= ?
-       ORDER BY v.datOfVisit DESC, v.visitStart DESC
-       LIMIT 2000`,
-      [CLIENT_ID, dateFrom, dateTo],
-    );
-
-    console.log(`[sql-data] visit query: ${Date.now() - t0}ms, ${visitRows.length} rows`);
-
-    if (visitRows.length === 0) {
-      return NextResponse.json({ headers: BASE_HEADERS, rows: [], imageColumns: [] } as ParseResult);
-    }
-
-    // ── 2. Form responses — NO JOIN, filter by storeID/peopleID IN lists ─────
-    // Avoids the DATE() function in the JOIN which prevented index usage.
-    // We extract the unique storeID + peopleID pairs from the visits we already
-    // have and pass them directly — each query uses its own index cleanly.
-    const uniqueStoreIds  = [...new Set(visitRows.map(v => v._storeId  as number))];
-    const uniquePeopleIds = [...new Set(visitRows.map(v => v._peopleId as number))];
-
-    const formIdPlaceholders    = STELLR_FORM_IDS.map(() => '?').join(',');
-    const storeIdPlaceholders   = uniqueStoreIds.map(() => '?').join(',');
-    const peopleIdPlaceholders  = uniquePeopleIds.map(() => '?').join(',');
-
-    const [formRows] = await pool.query<RowDataPacket[]>(
-      `SELECT
-         f.storeID,
-         f.peopleID,
-         DATE_FORMAT(f.captureDate, '%Y-%m-%d')  AS visitDate,
-         f.questionOrder,
-         f.question,
-         COALESCE(
-           NULLIF(f.answerTypeBigString, ''),
-           NULLIF(f.answerTypeString, ''),
-           CAST(f.answerTypeNumeric AS CHAR)
-         ) AS answer
-       FROM dashboardFormsExpanded f
-       WHERE f.formID    IN (${formIdPlaceholders})
-         AND f.captureDate >= ?
-         AND f.captureDate  < DATE_ADD(?, INTERVAL 1 DAY)
-         AND f.storeID   IN (${storeIdPlaceholders})
-         AND f.peopleID  IN (${peopleIdPlaceholders})
-       ORDER BY f.storeID, f.peopleID, visitDate, f.questionOrder`,
-      [...STELLR_FORM_IDS, dateFrom, dateTo, ...uniqueStoreIds, ...uniquePeopleIds],
-    );
-
-    console.log(`[sql-data] form query: ${Date.now() - t0}ms, ${formRows.length} rows`);
-
-    // ── 3. Pivot: storeID|peopleID|date → { question: answer } ────────────────
-    const formMap        = new Map<string, Record<string, string | null>>();
-    const questionOrder  = new Map<string, number>();
-    const imageQuestions = new Set<string>();
-
-    for (const row of formRows) {
-      const key = `${row.storeID}|${row.peopleID}|${row.visitDate}`;
-      const q   = String(row.question ?? '').trim();
-      const a   = row.answer != null ? String(row.answer) : null;
-
-      if (!q) continue;
-
-      if (!formMap.has(key)) formMap.set(key, {});
-      formMap.get(key)![q] = a;
-
-      if (!questionOrder.has(q)) questionOrder.set(q, Number(row.questionOrder ?? 999));
-      if (a && a.startsWith('https://')) imageQuestions.add(q);
-    }
-
-    const allQuestions = [...questionOrder.entries()]
-      .sort((a, b) => a[1] - b[1])
-      .map(([q]) => q);
-
-    // ── 4. Build final rows ───────────────────────────────────────────────────
-    const headers      = [...BASE_HEADERS, ...allQuestions];
-    const imageColumns = [...imageQuestions];
-
-    const rows = visitRows.map(v => {
-      const key         = `${v._storeId}|${v._peopleId}|${v._visitDate}`;
-      const formAnswers = formMap.get(key) ?? {};
-      const out: Record<string, string | number | null> = {};
-      for (const h of BASE_HEADERS) out[h] = (v[h] as string | number | null) ?? null;
-      for (const q of allQuestions)  out[q] = formAnswers[q] ?? null;
-      return out;
-    });
-
-    const result: ParseResult = { headers, rows, imageColumns };
-    cache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
-    console.log(`[sql-data] total: ${Date.now() - t0}ms — cached for 5 min`);
-    return NextResponse.json(result);
-
+    const result = await fetchAndCache(dateFrom, dateTo);
+    return NextResponse.json(result as ParseResult);
   } catch (e) {
     console.error('[sql-data]', e);
     return NextResponse.json({ error: 'Database query failed' }, { status: 500 });
