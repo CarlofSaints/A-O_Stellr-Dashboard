@@ -1,34 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
-import { readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { loadUsers, saveUsers } from '@/lib/userData';
 import { sendWelcomeEmail } from '@/lib/email';
-
-interface User {
-  id: string;
-  name: string;
-  email: string;
-  password: string;
-  isAdmin: boolean;
-}
-
-const USERS_PATH = join(process.cwd(), 'data', 'users.json');
-
-function getUsers(): User[] {
-  try {
-    return JSON.parse(readFileSync(USERS_PATH, 'utf-8'));
-  } catch {
-    return [];
-  }
-}
-
-function saveUsers(users: User[]) {
-  writeFileSync(USERS_PATH, JSON.stringify(users, null, 2));
-}
 
 // GET — list all users (no passwords)
 export async function GET() {
-  const users = getUsers();
+  const users = loadUsers();
   return NextResponse.json(users.map(({ password: _p, ...u }) => u));
 }
 
@@ -40,13 +17,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Name, email and password required' }, { status: 400 });
     }
 
-    const users = getUsers();
+    const users = loadUsers();
     if (users.find(u => u.email.toLowerCase() === email.toLowerCase())) {
       return NextResponse.json({ error: 'Email already exists' }, { status: 409 });
     }
 
-    const hashed = await bcrypt.hash(password, 10);
-    const newUser: User = {
+    const hashed  = await bcrypt.hash(password, 10);
+    const newUser = {
       id:       Date.now().toString(),
       name:     name.trim(),
       email:    email.toLowerCase().trim(),
@@ -55,7 +32,7 @@ export async function POST(req: NextRequest) {
     };
 
     users.push(newUser);
-    saveUsers(users);
+    await saveUsers(users);
 
     if (sendEmail) {
       try { await sendWelcomeEmail(newUser.email, newUser.name, password); } catch (e) {
