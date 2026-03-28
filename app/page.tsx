@@ -371,6 +371,7 @@ export default function Dashboard() {
   const [selProvinces, setSelProvinces] = useState<string[]>([]);
   const [selReps, setSelReps] = useState<string[]>([]);
   const [selSources, setSelSources] = useState<string[]>([]);
+  const [selStores, setSelStores] = useState<string[]>([]);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
@@ -460,12 +461,51 @@ export default function Dashboard() {
     [mergedData]
   );
 
+  // Stores available given current channel/province/rep/source/date selections (cascaded)
+  const availableStores = useMemo(() => {
+    if (!mergedData || !storeCol) return [];
+    const fromDate = dateFrom ? new Date(dateFrom) : null;
+    const toDate   = dateTo   ? new Date(dateTo)   : null;
+    return unique(
+      mergedData.rows
+        .filter(row => {
+          const channel  = String(row['Channel']  ?? '').trim();
+          const province = String(row['Province'] ?? '').trim();
+          const rep      = getRepName(row);
+          const source   = String(row['_source']  ?? '').trim();
+          if (selChannels.length  > 0 && selChannels.length  < allChannels.length  && !selChannels.includes(channel))   return false;
+          if (selProvinces.length > 0 && selProvinces.length < allProvinces.length && !selProvinces.includes(province)) return false;
+          if (selReps.length      > 0 && selReps.length      < allReps.length      && !selReps.includes(rep))           return false;
+          if (selSources.length   > 0 && selSources.length   < allSources.length   && !selSources.includes(source))     return false;
+          if (fromDate || toDate) {
+            const rowDate = parseDMY(String(row['Date'] ?? ''));
+            if (rowDate) {
+              if (fromDate && rowDate < fromDate) return false;
+              if (toDate   && rowDate > toDate)   return false;
+            }
+          }
+          return true;
+        })
+        .map(r => String(r[storeCol] ?? '').trim())
+        .filter(Boolean)
+    );
+  }, [mergedData, storeCol, selChannels, selProvinces, selReps, selSources, dateFrom, dateTo, allChannels.length, allProvinces.length, allReps.length, allSources.length]);
+
   useEffect(() => {
     setSelChannels(allChannels);
     setSelProvinces(allProvinces);
     setSelReps(allReps);
     setSelSources(allSources);
   }, [allChannels, allProvinces, allReps, allSources]);
+
+  // Keep selStores in sync when availableStores shrinks (due to other filter changes)
+  useEffect(() => {
+    setSelStores(prev => {
+      if (prev.length === 0) return availableStores; // initial load
+      const intersection = prev.filter(s => availableStores.includes(s));
+      return intersection.length === 0 ? availableStores : intersection;
+    });
+  }, [availableStores]);
 
   const filteredRows = useMemo(() => {
     if (!mergedData) return [];
@@ -476,10 +516,12 @@ export default function Dashboard() {
       const province = String(row['Province'] ?? '').trim();
       const rep      = getRepName(row);
       const source   = String(row['_source']  ?? '').trim();
-      if (selChannels.length  > 0 && selChannels.length  < allChannels.length  && !selChannels.includes(channel))   return false;
-      if (selProvinces.length > 0 && selProvinces.length < allProvinces.length && !selProvinces.includes(province)) return false;
-      if (selReps.length      > 0 && selReps.length      < allReps.length      && !selReps.includes(rep))           return false;
-      if (selSources.length   > 0 && selSources.length   < allSources.length   && !selSources.includes(source))     return false;
+      const store    = storeCol ? String(row[storeCol] ?? '').trim() : '';
+      if (selChannels.length  > 0 && selChannels.length  < allChannels.length   && !selChannels.includes(channel))   return false;
+      if (selProvinces.length > 0 && selProvinces.length < allProvinces.length  && !selProvinces.includes(province)) return false;
+      if (selReps.length      > 0 && selReps.length      < allReps.length       && !selReps.includes(rep))           return false;
+      if (selSources.length   > 0 && selSources.length   < allSources.length    && !selSources.includes(source))     return false;
+      if (selStores.length    > 0 && selStores.length    < availableStores.length && !selStores.includes(store))     return false;
       if (fromDate || toDate) {
         const rowDate = parseDMY(String(row['Date'] ?? ''));
         if (rowDate) {
@@ -489,7 +531,7 @@ export default function Dashboard() {
       }
       return true;
     });
-  }, [mergedData, selChannels, selProvinces, selReps, selSources, dateFrom, dateTo, allChannels.length, allProvinces.length, allReps.length, allSources.length]);
+  }, [mergedData, storeCol, selChannels, selProvinces, selReps, selSources, selStores, dateFrom, dateTo, allChannels.length, allProvinces.length, allReps.length, allSources.length, availableStores.length]);
 
   const kpis = useMemo(() => ({
     stores:    new Set(filteredRows.map(r => String(r['Store'] ?? r['Store Name'] ?? '').trim()).filter(Boolean)).size,
@@ -619,6 +661,7 @@ export default function Dashboard() {
   const clearFilters = () => {
     setSelChannels(allChannels); setSelProvinces(allProvinces);
     setSelReps(allReps);         setSelSources(allSources);
+    setSelStores(availableStores);
     setDateFrom('');             setDateTo('');
   };
 
@@ -862,9 +905,12 @@ export default function Dashboard() {
                 {allSources.length > 1 && (
                   <MultiSelect label="Source" items={allSources} selected={selSources} onChange={setSelSources} />
                 )}
-                <MultiSelect label="Channel"  items={allChannels}  selected={selChannels}  onChange={setSelChannels} />
-                <MultiSelect label="Province" items={allProvinces} selected={selProvinces} onChange={setSelProvinces} />
-                <MultiSelect label="Rep"      items={allReps}      selected={selReps}      onChange={setSelReps} />
+                <MultiSelect label="Channel"  items={allChannels}    selected={selChannels}  onChange={setSelChannels} />
+                <MultiSelect label="Province" items={allProvinces}   selected={selProvinces} onChange={setSelProvinces} />
+                {storeCol && availableStores.length > 0 && (
+                  <MultiSelect label="Store" items={availableStores} selected={selStores}   onChange={setSelStores} />
+                )}
+                <MultiSelect label="Rep"      items={allReps}        selected={selReps}      onChange={setSelReps} />
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 mb-1">Date From</label>
                   <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
