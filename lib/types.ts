@@ -6,6 +6,7 @@ export interface ParseResult {
   headers: string[];
   rows: VisitRow[];
   imageColumns: string[];
+  imageFolderName: string;
 }
 
 export interface LoadedFile {
@@ -15,4 +16,5 @@ export interface LoadedFile {
   headers: string[];
   imageColumns: string[];
   rows: VisitRow[];
+  imageFolderName: string;
 }

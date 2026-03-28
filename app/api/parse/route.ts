@@ -5,6 +5,29 @@ import type { ParseResult, VisitRow } from '@/lib/types';
 // Perigee section-header artefacts — not real data columns
 const SECTION_HEADERS = new Set(['Media', 'Stock', 'Training Stuff', 'Staff', 'Line Management']);
 
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function fmtDate(d: Date): string {
+  return `${d.getDate().toString().padStart(2,'0')} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+/** Returns "DD MMM YYYY - DD MMM YYYY - Stellr" matching the VBA folder name convention */
+function buildFolderName(rows: VisitRow[], dateHeader: string): string {
+  let minD: Date | null = null;
+  let maxD: Date | null = null;
+  for (const row of rows) {
+    const v = String(row[dateHeader] ?? '').trim();
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v);
+    if (!m) continue;
+    const d = new Date(+m[3], +m[2] - 1, +m[1]);
+    if (!minD || d < minD) minD = d;
+    if (!maxD || d > maxD) maxD = d;
+  }
+  if (minD && maxD) return `${fmtDate(minD)} - ${fmtDate(maxD)} - Stellr`;
+  const now = new Date();
+  return `${now.getFullYear()}-${(now.getMonth()+1).toString().padStart(2,'0')}-${now.getDate().toString().padStart(2,'0')} - Stellr`;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
@@ -57,10 +80,18 @@ export async function POST(req: NextRequest) {
       })
       .filter(row => Object.values(row).some(v => v !== null && v !== ''));
 
+    // Detect date column (header containing "date", case-insensitive; fallback col J index 9)
+    const dateHeader =
+      keepHeaders.find(h => /date/i.test(h)) ??
+      (keepHeaders.length > 9 ? keepHeaders[9] : keepHeaders[0]);
+
+    const imageFolderName = buildFolderName(rows, dateHeader);
+
     const result: ParseResult = {
       headers: keepHeaders,
       rows,
       imageColumns: [...imageCols],
+      imageFolderName,
     };
 
     return NextResponse.json(result);

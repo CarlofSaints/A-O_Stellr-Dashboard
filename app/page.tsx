@@ -12,6 +12,12 @@ interface Session {
   isAdmin: boolean;
 }
 
+interface CachePayload {
+  updatedAt: string;
+  updatedBy: string;
+  files: LoadedFile[];
+}
+
 // ─── Default column widths ────────────────────────────────────────────────────
 const W = {
   num:     40,
@@ -70,6 +76,20 @@ function unique(arr: string[]): string[] {
 
 function stripExt(filename: string): string {
   return filename.replace(/\.[^/.]+$/, '');
+}
+
+/**
+ * Extract the unique token segment from a Perigee image URL.
+ * URL format: https://live.perigeeportal.co.za/.../perigee-TOKEN/NONE/NONE
+ * Returns e.g. "perigee-abc123" (used as the VBA-saved filename without .jpg)
+ */
+function extractImageToken(url: string): string | null {
+  const parts = url.split('/');
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const seg = parts[i].trim();
+    if (seg && seg !== 'NONE' && !seg.includes('.')) return seg;
+  }
+  return null;
 }
 
 // ─── ResizableTh ──────────────────────────────────────────────────────────────
@@ -293,9 +313,10 @@ function Lightbox({ url, onClose }: { url: string; onClose: () => void }) {
         </button>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={`/api/image?url=${encodeURIComponent(url)}`}
+          src={url}
           alt="Survey photo"
           className="max-h-[85vh] max-w-full rounded-lg shadow-2xl cursor-default"
+          onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
         />
       </div>
     </div>
@@ -309,12 +330,15 @@ export default function Dashboard() {
   const [authChecked, setAuthChecked] = useState(false);
   const router = useRouter();
 
-  const [dataMode, setDataMode] = useState<'excel' | 'sql'>('sql');
+  const [dataMode, setDataMode] = useState<'excel' | 'sql'>('excel');
   const [loadedFiles, setLoadedFiles] = useState<LoadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [cacheLoading, setCacheLoading] = useState(false);
+  const [cacheInfo, setCacheInfo] = useState<{ updatedAt: string; updatedBy: string } | null>(null);
+  const restoringFromCache = useRef(false);
 
   // SQL mode state
   const today = new Date();
@@ -493,12 +517,38 @@ export default function Dashboard() {
           name: stripExt(file.name), fileName: file.name,
           rowCount: parsed.rows.length, headers: parsed.headers,
           imageColumns: parsed.imageColumns, rows: parsed.rows,
+          imageFolderName: parsed.imageFolderName ?? '',
         });
       } catch (e) {
         setError(`Failed to parse "${file.name}": ${e instanceof Error ? e.message : 'Unknown error'}`);
       }
     }
-    if (results.length > 0) setLoadedFiles(prev => [...prev, ...results]);
+    if (results.length > 0) {
+      setLoadedFiles(prev => {
+        // Build set of all Visit UUIDs already in loaded data
+        const seen = new Set(
+          prev.flatMap(f => f.rows.map(r => String(r['Visit UUID'] ?? '').trim())).filter(Boolean)
+        );
+        const deduped: LoadedFile[] = [];
+        for (const result of results) {
+          const filteredRows = result.rows.filter(r => {
+            const uuid = String(r['Visit UUID'] ?? '').trim();
+            if (!uuid) return true; // no UUID — always include
+            if (seen.has(uuid)) return false; // duplicate — skip
+            seen.add(uuid); // register so intra-batch dupes are also caught
+            return true;
+          });
+          const skipped = result.rows.length - filteredRows.length;
+          if (filteredRows.length === 0 && skipped > 0) {
+            // All rows were duplicates — skip file but surface a notice
+            setError(`"${result.fileName}": all ${skipped} rows already loaded (duplicates skipped).`);
+            continue;
+          }
+          deduped.push({ ...result, rows: filteredRows, rowCount: filteredRows.length });
+        }
+        return [...prev, ...deduped];
+      });
+    }
     setUploading(false);
   }, []);
 
@@ -518,6 +568,7 @@ export default function Dashboard() {
         name: label, fileName: label,
         rowCount: parsed.rows.length, headers: parsed.headers,
         imageColumns: parsed.imageColumns, rows: parsed.rows,
+        imageFolderName: parsed.imageFolderName ?? '',
       }]);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'SQL query failed');
@@ -525,14 +576,38 @@ export default function Dashboard() {
       setSqlLoading(false);
     }
   }, [sqlDateFrom, sqlDateTo]);
-  // Auto-load SQL data on first render once auth is confirmed
+  // Auto-load from SP cache on first render once auth is confirmed
   const autoLoaded = useRef(false);
   useEffect(() => {
-    if (authChecked && !autoLoaded.current) {
-      autoLoaded.current = true;
-      loadSqlData();
+    if (!authChecked || autoLoaded.current) return;
+    autoLoaded.current = true;
+    setCacheLoading(true);
+    fetch('/api/sp-cache')
+      .then(r => r.json())
+      .then((data: CachePayload | null) => {
+        if (data?.files?.length) {
+          restoringFromCache.current = true;
+          setLoadedFiles(data.files);
+          setCacheInfo({ updatedAt: data.updatedAt, updatedBy: data.updatedBy });
+        }
+      })
+      .catch(() => { /* no cache — show upload UI */ })
+      .finally(() => setCacheLoading(false));
+  }, [authChecked]);
+
+  // Save to SP cache whenever loadedFiles changes (Excel mode only)
+  useEffect(() => {
+    if (restoringFromCache.current) {
+      restoringFromCache.current = false;
+      return;
     }
-  }, [authChecked, loadSqlData]);
+    if (dataMode !== 'excel' || loadedFiles.length === 0 || !session) return;
+    fetch('/api/sp-cache', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updatedAt: new Date().toISOString(), updatedBy: session.name, files: loadedFiles }),
+    }).catch(err => console.error('Cache save failed:', err));
+  }, [loadedFiles, dataMode, session]);
 
   // Auto-refresh every 2 hours in SQL mode
   useEffect(() => {
@@ -599,8 +674,16 @@ export default function Dashboard() {
 
       <main className="max-w-[1600px] mx-auto px-6 py-6">
 
+        {/* Loading from cache */}
+        {loadedFiles.length === 0 && cacheLoading && (
+          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-16 text-center">
+            <div className="w-8 h-8 border-2 border-[#1B3A6B] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+            <p className="text-sm text-gray-500">Loading latest data...</p>
+          </div>
+        )}
+
         {/* Mode Toggle + Load Zone */}
-        {loadedFiles.length === 0 && (
+        {loadedFiles.length === 0 && !cacheLoading && (
           <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
             {/* Mode tabs */}
             <div className="flex border-b border-gray-200">
@@ -616,8 +699,8 @@ export default function Dashboard() {
               </button>
               <button
                 type="button"
-                onClick={() => { setDataMode('sql'); setError(null); }}
-                className={`flex items-center gap-2 px-6 py-3 text-sm font-semibold transition-colors ${dataMode === 'sql' ? 'text-[#1B3A6B] border-b-2 border-[#1B3A6B] -mb-px' : 'text-gray-500 hover:text-gray-700'}`}
+                disabled
+                className="flex items-center gap-2 px-6 py-3 text-sm font-semibold text-gray-300 cursor-not-allowed select-none"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2 1.5 3 3.5 3h9c2 0 3.5-1 3.5-3V7c0-2-1.5-3-3.5-3h-9C5.5 4 4 5 4 7zM9 11h6M9 15h4" />
@@ -710,12 +793,19 @@ export default function Dashboard() {
             {/* Loaded Files Panel */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-5">
               <div className="flex items-center justify-between mb-3">
-                <p className="text-sm font-semibold text-gray-700">
-                  Loaded Files
-                  <span className="ml-2 text-xs font-normal text-gray-400">
-                    {loadedFiles.length} file{loadedFiles.length !== 1 ? 's' : ''} · {mergedData.rows.length.toLocaleString()} total rows
-                  </span>
-                </p>
+                <div>
+                  <p className="text-sm font-semibold text-gray-700">
+                    Loaded Files
+                    <span className="ml-2 text-xs font-normal text-gray-400">
+                      {loadedFiles.length} file{loadedFiles.length !== 1 ? 's' : ''} · {mergedData.rows.length.toLocaleString()} total rows
+                    </span>
+                  </p>
+                  {cacheInfo && (
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      Cached {new Date(cacheInfo.updatedAt).toLocaleString('en-ZA', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} by {cacheInfo.updatedBy}
+                    </p>
+                  )}
+                </div>
                 <div className="flex items-center gap-2">
                   {(uploading || sqlLoading) && <div className="w-4 h-4 border-2 border-[#1B3A6B] border-t-transparent rounded-full animate-spin" />}
                   {dataMode === 'sql' ? (
@@ -904,16 +994,35 @@ export default function Dashboard() {
                               const isImage = mergedData.imageColumns.includes(h);
                               if (isImage) {
                                 if (val && typeof val === 'string' && val.startsWith('https://')) {
+                                  const imgToken = extractImageToken(val);
+                                  const spUrl = imgToken
+                                    ? `/api/sp-image?token=${encodeURIComponent(imgToken)}`
+                                    : null;
                                   return (
                                     <td key={h} className="px-2 py-1.5">
-                                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                                      <img
-                                        src={`/api/image?url=${encodeURIComponent(val)}`}
-                                        alt={h}
-                                        className="h-16 w-20 object-cover rounded border border-gray-200 cursor-pointer hover:opacity-80 transition-opacity"
-                                        onClick={() => setLightboxUrl(val)}
-                                        loading="lazy"
-                                      />
+                                      <div className="flex flex-col items-start gap-1">
+                                        {spUrl ? (
+                                          // eslint-disable-next-line @next/next/no-img-element
+                                          <img
+                                            src={spUrl}
+                                            alt={h}
+                                            className="h-16 w-20 object-cover rounded border border-gray-200 cursor-pointer hover:opacity-80 transition-opacity"
+                                            onClick={() => setLightboxUrl(spUrl)}
+                                            loading="lazy"
+                                          />
+                                        ) : (
+                                          <span className="text-gray-300 text-xs">no image</span>
+                                        )}
+                                        <a
+                                          href={val}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-[10px] text-blue-500 hover:underline max-w-[96px] truncate block"
+                                          title={val}
+                                        >
+                                          View original
+                                        </a>
+                                      </div>
                                     </td>
                                   );
                                 }

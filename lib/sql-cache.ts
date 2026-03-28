@@ -2,6 +2,22 @@ import type { RowDataPacket } from 'mysql2';
 import { getPool } from '@/lib/db';
 import type { ParseResult } from '@/lib/types';
 
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function fmtDMY(iso: string): string {
+  // iso = YYYY-MM-DD
+  const [y, m, d] = iso.split('-').map(Number);
+  return `${String(d).padStart(2,'0')} ${MONTHS[m - 1]} ${y}`;
+}
+
+function buildFolderName(dateFrom: string, dateTo: string): string {
+  try {
+    return `${fmtDMY(dateFrom)} - ${fmtDMY(dateTo)} - Stellr`;
+  } catch {
+    return `${dateFrom} - ${dateTo} - Stellr`;
+  }
+}
+
 const CLIENT_ID      = 16;
 const STELLR_FORM_IDS = [1199, 1204, 1205, 1208, 1213, 1214, 1223];
 const CACHE_TTL_MS   = 60 * 60 * 1000; // 1 hour
@@ -13,6 +29,7 @@ const BASE_HEADERS = [
 export const cache = new Map<string, { data: ParseResult; expiresAt: number }>();
 
 export async function fetchAndCache(dateFrom: string, dateTo: string): Promise<ParseResult> {
+  const imageFolderName = buildFolderName(dateFrom, dateTo);
   const cacheKey = `${dateFrom}|${dateTo}`;
   const cached   = cache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
@@ -45,7 +62,7 @@ export async function fetchAndCache(dateFrom: string, dateTo: string): Promise<P
   console.log(`[sql-cache] visit query: ${Date.now() - t0}ms, ${visitRows.length} rows`);
 
   if (visitRows.length === 0) {
-    const empty: ParseResult = { headers: BASE_HEADERS, rows: [], imageColumns: [] };
+    const empty: ParseResult = { headers: BASE_HEADERS, rows: [], imageColumns: [], imageFolderName };
     cache.set(cacheKey, { data: empty, expiresAt: Date.now() + CACHE_TTL_MS });
     return empty;
   }
@@ -112,7 +129,7 @@ export async function fetchAndCache(dateFrom: string, dateTo: string): Promise<P
     return out;
   });
 
-  const result: ParseResult = { headers, rows, imageColumns };
+  const result: ParseResult = { headers, rows, imageColumns, imageFolderName };
   cache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
   console.log(`[sql-cache] total: ${Date.now() - t0}ms — cached 15 min`);
   return result;
