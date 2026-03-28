@@ -648,6 +648,8 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="flex items-center gap-5">
+            <Image src="/perigee-logo.jpg" alt="Perigee" width={72} height={28} className="object-contain rounded" />
+            <div className="h-6 w-px bg-gray-200" />
             <Image src="/stellr-logo.png" alt="Stellr" width={110} height={34} className="object-contain" />
             <div className="h-6 w-px bg-gray-200" />
             <div className="text-right">
@@ -904,8 +906,8 @@ export default function Dashboard() {
               <div
                 ref={tableScrollRef}
                 onScroll={onTableScroll}
-                className="hide-scrollbar"
-                style={{ overflowX: 'scroll', overflowY: 'auto', maxHeight: '70vh' }}
+                className="hide-x-scrollbar"
+                style={{ overflowX: 'scroll', maxHeight: '70vh' }}
               >
                 <table
                   className="text-sm border-collapse"
@@ -1061,11 +1063,6 @@ export default function Dashboard() {
       </main>
 
       {lightboxUrl && <Lightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />}
-
-      {/* Perigee logo — fixed bottom right */}
-      <div className="fixed bottom-4 right-4 z-50 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-2 shadow-md">
-        <Image src="/perigee-logo.jpg" alt="Perigee" width={72} height={28} className="object-contain rounded" />
-      </div>
     </div>
   );
 }

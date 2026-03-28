@@ -23,3 +23,8 @@ body {
 
 .hide-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 .hide-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Hides only the horizontal scrollbar — vertical remains visible */
+.hide-x-scrollbar::-webkit-scrollbar:horizontal { display: none; }
+.hide-x-scrollbar { overflow-y: scroll; }
+.hide-x-scrollbar::-webkit-scrollbar:vertical { display: block; }
