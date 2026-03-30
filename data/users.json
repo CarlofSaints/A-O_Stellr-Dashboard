@@ -1,7 +1,7 @@
 [
-  {"id":"1","name":"Heather Guy","email":"admin@merchandisinginsa.co.za","password":"$2b$10$FYfLA2PAv5Fj3EZC6RumxemKHxfAGB35Jd19YpBU.ZbzUUojTGgRy","isAdmin":true},
-  {"id":"2","name":"Marthinus Huyzers","email":"marthinus@merchandisinginsa.co.za","password":"$2b$10$FYfLA2PAv5Fj3EZC6RumxemKHxfAGB35Jd19YpBU.ZbzUUojTGgRy","isAdmin":false},
-  {"id":"3","name":"Carl Dos Santos","email":"carl@outerjoin.co.za","password":"$2b$10$wbta9mffgFcAvXyt4j30LutIdMMm.LFvXD2ys0.vvKO5kDjQOIumS","isAdmin":true},
-  {"id":"4","name":"Charles Moloto","email":"charles@outerjoin.co.za","password":"$2b$10$FYfLA2PAv5Fj3EZC6RumxemKHxfAGB35Jd19YpBU.ZbzUUojTGgRy","isAdmin":false},
-  {"id":"5","name":"Laurette Phakath","email":"laurette@outerjoin.co.za","password":"$2b$10$FYfLA2PAv5Fj3EZC6RumxemKHxfAGB35Jd19YpBU.ZbzUUojTGgRy","isAdmin":false}
+  {"id":"1","name":"Heather Guy","email":"admin@merchandisinginsa.co.za","password":"$2b$10$YqQ7NHWZprWGRUX2eKM0n.2oFSKgcHnbrlm2SDLnBpLnsiBQbADDS","isAdmin":true},
+  {"id":"2","name":"Marthinus Huyzers","email":"marthinus@merchandisinginsa.co.za","password":"$2b$10$YqQ7NHWZprWGRUX2eKM0n.2oFSKgcHnbrlm2SDLnBpLnsiBQbADDS","isAdmin":false},
+  {"id":"3","name":"Carl Dos Santos","email":"carl@outerjoin.co.za","password":"$2b$10$YqQ7NHWZprWGRUX2eKM0n.2oFSKgcHnbrlm2SDLnBpLnsiBQbADDS","isAdmin":true},
+  {"id":"4","name":"Charles Moloto","email":"charles@outerjoin.co.za","password":"$2b$10$YqQ7NHWZprWGRUX2eKM0n.2oFSKgcHnbrlm2SDLnBpLnsiBQbADDS","isAdmin":false},
+  {"id":"5","name":"Laurette Phakath","email":"laurette@outerjoin.co.za","password":"$2b$10$YqQ7NHWZprWGRUX2eKM0n.2oFSKgcHnbrlm2SDLnBpLnsiBQbADDS","isAdmin":false}
 ]

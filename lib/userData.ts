@@ -12,19 +12,31 @@ export interface User {
 const ENV_KEY   = 'AO_USERS_JSON';
 const LOCAL_PATH = join(process.cwd(), 'data', 'users.json');
 
+// In-memory cache so writes are immediately visible to subsequent reads
+// (process.env is stale until the next deployment on Vercel)
+let _cache: User[] | null = null;
+
 export function loadUsers(): User[] {
+  if (_cache) return _cache;
+
   const envRaw = process.env[ENV_KEY];
   if (envRaw) {
-    try { return JSON.parse(envRaw); } catch { /* fall through */ }
+    try {
+      _cache = JSON.parse(envRaw);
+      return _cache!;
+    } catch { /* fall through */ }
   }
   try {
-    return JSON.parse(readFileSync(LOCAL_PATH, 'utf-8'));
+    _cache = JSON.parse(readFileSync(LOCAL_PATH, 'utf-8'));
+    return _cache!;
   } catch {
     return [];
   }
 }
 
 export async function saveUsers(users: User[]): Promise<void> {
+  _cache = users; // update in-memory immediately
+
   const value     = JSON.stringify(users);
   const projectId = process.env.VERCEL_PROJECT_ID;
   const token     = process.env.VERCEL_TOKEN;
