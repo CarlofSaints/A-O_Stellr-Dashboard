@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { fetchAndCache, cache } from '@/lib/sql-cache';
 import type { ParseResult } from '@/lib/types';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: NextRequest) {
   const sp       = req.nextUrl.searchParams;
   const dateFrom = sp.get('dateFrom') ?? '';
@@ -17,7 +19,9 @@ export async function GET(req: NextRequest) {
       console.log(`[sql-data] cache hit for ${cacheKey}`);
     }
     const result = await fetchAndCache(dateFrom, dateTo);
-    return NextResponse.json(result as ParseResult);
+    return NextResponse.json(result as ParseResult, {
+      headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
+    });
   } catch (e) {
     console.error('[sql-data]', e);
     return NextResponse.json({ error: 'Database query failed' }, { status: 500 });

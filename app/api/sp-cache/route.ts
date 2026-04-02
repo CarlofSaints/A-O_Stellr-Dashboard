@@ -2,38 +2,215 @@ import { NextRequest, NextResponse } from 'next/server';
 import { fetchSpFile, uploadSpFile } from '@/lib/graph-oj';
 import type { LoadedFile } from '@/lib/types';
 
-interface CachePayload {
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface ChannelSummary {
+  name: string;
+  fileCount: number;
+  rowCount: number;
+}
+
+interface IndexPayload {
+  updatedAt: string;
+  updatedBy: string;
+  channels: ChannelSummary[];
+}
+
+interface ChannelData {
+  files: LoadedFile[];
+}
+
+/** Legacy single-file cache format (for migration) */
+interface LegacyPayload {
   updatedAt: string;
   updatedBy: string;
   files: LoadedFile[];
 }
 
-function getCachePath(): string {
-  const imagesBase = (process.env.AO_SP_IMAGES_BASE_PATH ?? '').replace(/\/$/, '');
-  if (!imagesBase) throw new Error('AO_SP_IMAGES_BASE_PATH not configured');
-  // Parent folder of DOWNLOADED FORM IMAGES — store cache file alongside it
-  const parent = imagesBase.split('/').slice(0, -1).join('/');
-  return `${parent}/latest-dashboard-data.json`;
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const NO_CACHE = { 'Cache-Control': 'no-store, no-cache, must-revalidate' };
+
+function slugify(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, '-');
 }
 
-export async function GET() {
+function getBasePath(): string {
+  const imagesBase = (process.env.AO_SP_IMAGES_BASE_PATH ?? '').replace(/\/$/, '');
+  if (!imagesBase) throw new Error('AO_SP_IMAGES_BASE_PATH not configured');
+  return imagesBase.split('/').slice(0, -1).join('/');
+}
+
+function indexPath(): string {
+  return `${getBasePath()}/dashboard-index.json`;
+}
+
+function channelPath(channelName: string): string {
+  return `${getBasePath()}/dashboard-channel-${slugify(channelName)}.json`;
+}
+
+function legacyPath(): string {
+  return `${getBasePath()}/latest-dashboard-data.json`;
+}
+
+async function fetchJson<T>(path: string): Promise<T | null> {
   try {
-    const buf = await fetchSpFile(getCachePath());
-    const payload = JSON.parse(Buffer.from(buf).toString('utf-8')) as CachePayload;
-    return NextResponse.json(payload);
+    const buf = await fetchSpFile(path);
+    return JSON.parse(Buffer.from(buf).toString('utf-8')) as T;
   } catch {
-    // Cache file doesn't exist yet — not an error, just return null
-    return NextResponse.json(null);
+    return null;
+  }
+}
+
+/** Deduplicate rows by Visit UUID — keeps first occurrence */
+function dedupeRows(existing: LoadedFile[], incoming: LoadedFile[]): LoadedFile[] {
+  const seen = new Set(
+    existing.flatMap(f => f.rows.map(r => String(r['Visit UUID'] ?? '').trim())).filter(Boolean)
+  );
+  const result: LoadedFile[] = [];
+  for (const file of incoming) {
+    const filtered = file.rows.filter(r => {
+      const uuid = String(r['Visit UUID'] ?? '').trim();
+      if (!uuid) return true;
+      if (seen.has(uuid)) return false;
+      seen.add(uuid);
+      return true;
+    });
+    if (filtered.length > 0) {
+      result.push({ ...file, rows: filtered, rowCount: filtered.length });
+    }
+  }
+  return result;
+}
+
+// ─── Migration from legacy single-file cache ────────────────────────────────
+
+async function migrateIfNeeded(): Promise<IndexPayload | null> {
+  // Check for new index first
+  const idx = await fetchJson<IndexPayload>(indexPath());
+  if (idx) return idx;
+
+  // Try legacy file
+  const legacy = await fetchJson<LegacyPayload>(legacyPath());
+  if (!legacy?.files?.length) return null;
+
+  // Split legacy files into per-channel buckets
+  const buckets = new Map<string, LoadedFile[]>();
+  for (const file of legacy.files) {
+    // Detect channel from file's rows
+    const channels = [...new Set(
+      file.rows.map(r => String(r['Channel'] ?? '').trim()).filter(Boolean)
+    )];
+    const ch = channels[0] || file.channel || file.name;
+    if (!buckets.has(ch)) buckets.set(ch, []);
+    buckets.get(ch)!.push({ ...file, channel: ch });
+  }
+
+  // Write per-channel files
+  const channelSummaries: ChannelSummary[] = [];
+  for (const [name, files] of buckets) {
+    const channelData: ChannelData = { files };
+    await uploadSpFile(channelPath(name), JSON.stringify(channelData));
+    channelSummaries.push({
+      name,
+      fileCount: files.length,
+      rowCount: files.reduce((s, f) => s + f.rowCount, 0),
+    });
+  }
+
+  // Write new index
+  const newIndex: IndexPayload = {
+    updatedAt: legacy.updatedAt,
+    updatedBy: legacy.updatedBy,
+    channels: channelSummaries,
+  };
+  await uploadSpFile(indexPath(), JSON.stringify(newIndex));
+
+  return newIndex;
+}
+
+// ─── Route handlers ──────────────────────────────────────────────────────────
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(req: NextRequest) {
+  try {
+    const channel = req.nextUrl.searchParams.get('channel');
+
+    if (channel) {
+      // Fetch specific channel data
+      const data = await fetchJson<ChannelData>(channelPath(channel));
+      if (!data) {
+        return NextResponse.json({ files: [] }, { headers: NO_CACHE });
+      }
+      return NextResponse.json(data, { headers: NO_CACHE });
+    }
+
+    // Return index (with migration fallback)
+    const idx = await migrateIfNeeded();
+    if (!idx) {
+      return NextResponse.json(null, { headers: NO_CACHE });
+    }
+    return NextResponse.json(idx, { headers: NO_CACHE });
+  } catch (err) {
+    console.error('SP cache GET error:', err);
+    return NextResponse.json(null, { headers: NO_CACHE });
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json() as CachePayload;
-    await uploadSpFile(getCachePath(), JSON.stringify(body));
-    return NextResponse.json({ ok: true });
+    const body = await req.json() as {
+      updatedBy: string;
+      channel: string;
+      files: LoadedFile[];
+    };
+    const { updatedBy, channel, files } = body;
+    if (!channel || !files?.length) {
+      return NextResponse.json({ error: 'channel and files required' }, { status: 400 });
+    }
+
+    // 1. Fetch existing channel data
+    const existing = await fetchJson<ChannelData>(channelPath(channel));
+    const existingFiles = existing?.files ?? [];
+
+    // 2. Merge — deduplicate by Visit UUID
+    const newFiles = dedupeRows(existingFiles, files);
+    const mergedFiles = [...existingFiles, ...newFiles];
+
+    // 3. Write merged channel file
+    const channelData: ChannelData = { files: mergedFiles };
+    await uploadSpFile(channelPath(channel), JSON.stringify(channelData));
+
+    // 4. Update index
+    let idx = await fetchJson<IndexPayload>(indexPath());
+    const channelSummary: ChannelSummary = {
+      name: channel,
+      fileCount: mergedFiles.length,
+      rowCount: mergedFiles.reduce((s, f) => s + f.rowCount, 0),
+    };
+
+    if (idx) {
+      const ci = idx.channels.findIndex(c => c.name === channel);
+      if (ci >= 0) {
+        idx.channels[ci] = channelSummary;
+      } else {
+        idx.channels.push(channelSummary);
+      }
+      idx.updatedAt = new Date().toISOString();
+      idx.updatedBy = updatedBy;
+    } else {
+      idx = {
+        updatedAt: new Date().toISOString(),
+        updatedBy,
+        channels: [channelSummary],
+      };
+    }
+    await uploadSpFile(indexPath(), JSON.stringify(idx));
+
+    return NextResponse.json({ ok: true, added: newFiles.reduce((s, f) => s + f.rowCount, 0) });
   } catch (err) {
-    console.error('SP cache save error:', err);
+    console.error('SP cache POST error:', err);
     return NextResponse.json({ error: 'Cache save failed' }, { status: 500 });
   }
 }

@@ -1,7 +1,7 @@
 import { Resend } from 'resend';
 
 const FROM    = 'A&O Dashboard <noreply@outerjoin.co.za>';
-const APP_URL = 'http://ao-stellr.outerjoin.co.za';
+const APP_URL = 'https://ao-dashboard-eta.vercel.app';
 
 function getResend() {
   if (!process.env.RESEND_API_KEY) throw new Error('RESEND_API_KEY not set');

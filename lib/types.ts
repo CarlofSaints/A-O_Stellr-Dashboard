@@ -17,4 +17,7 @@ export interface LoadedFile {
   imageColumns: string[];
   rows: VisitRow[];
   imageFolderName: string;
+  uploadedAt?: string;   // ISO timestamp
+  uploadedBy?: string;   // user name who uploaded
+  channel?: string;      // channel name (e.g. Makro, Game)
 }

@@ -3,10 +3,14 @@ import bcrypt from 'bcryptjs';
 import { loadUsers, saveUsers } from '@/lib/userData';
 import { sendWelcomeEmail } from '@/lib/email';
 
+export const dynamic = 'force-dynamic';
+
 // GET — list all users (no passwords)
 export async function GET() {
   const users = loadUsers();
-  return NextResponse.json(users.map(({ password: _p, ...u }) => u));
+  return NextResponse.json(users.map(({ password: _p, ...u }) => u), {
+    headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
+  });
 }
 
 // POST — create user

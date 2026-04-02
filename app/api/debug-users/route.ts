@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { loadUsers } from '@/lib/userData';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   const users = loadUsers();
   const envRaw = process.env.AO_USERS_JSON;

@@ -12,9 +12,19 @@ interface Session {
   isAdmin: boolean;
 }
 
-interface CachePayload {
+interface ChannelSummary {
+  name: string;
+  fileCount: number;
+  rowCount: number;
+}
+
+interface IndexPayload {
   updatedAt: string;
   updatedBy: string;
+  channels: ChannelSummary[];
+}
+
+interface ChannelData {
   files: LoadedFile[];
 }
 
@@ -336,9 +346,11 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [cacheLoading, setCacheLoading] = useState(false);
+  const [channelLoading, setChannelLoading] = useState(false);
   const [cacheInfo, setCacheInfo] = useState<{ updatedAt: string; updatedBy: string } | null>(null);
-  const restoringFromCache = useRef(false);
+  const [indexChannels, setIndexChannels] = useState<ChannelSummary[]>([]);
 
   // SQL mode state
   const today = new Date();
@@ -367,10 +379,9 @@ export default function Dashboard() {
     setColWidths(prev => ({ ...prev, [key]: w }));
   }, []);
 
-  const [selChannels, setSelChannels] = useState<string[]>([]);
+  const [selChannel, setSelChannel] = useState<string>('');
   const [selProvinces, setSelProvinces] = useState<string[]>([]);
   const [selReps, setSelReps] = useState<string[]>([]);
-  const [selSources, setSelSources] = useState<string[]>([]);
   const [selStores, setSelStores] = useState<string[]>([]);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -383,6 +394,12 @@ export default function Dashboard() {
     setAuthChecked(true);
   }, [router]);
 
+  // Escape key exits fullscreen table
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsFullscreen(false); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
 
   const handleLogout = () => {
     localStorage.removeItem('ao_session');
@@ -445,8 +462,8 @@ export default function Dashboard() {
   }, [mergedData, channelCol, storeCol, numW, channelW, storeW, repW, tableHeaders, gw]);
 
   const allChannels = useMemo(
-    () => unique((mergedData?.rows ?? []).map(r => String(r['Channel'] ?? '').trim()).filter(Boolean)),
-    [mergedData]
+    () => indexChannels.map(c => c.name).sort(),
+    [indexChannels]
   );
   const allProvinces = useMemo(
     () => unique((mergedData?.rows ?? []).map(r => String(r['Province'] ?? '').trim()).filter(Boolean)),
@@ -456,14 +473,10 @@ export default function Dashboard() {
     () => unique((mergedData?.rows ?? []).map(r => getRepName(r))),
     [mergedData]
   );
-  const allSources = useMemo(
-    () => unique((mergedData?.rows ?? []).map(r => String(r['_source'] ?? '').trim()).filter(Boolean)),
-    [mergedData]
-  );
 
-  // Stores available given current channel/province/rep/source/date selections (cascaded)
+  // Stores available given current channel/province/rep/date selections (cascaded)
   const availableStores = useMemo(() => {
-    if (!mergedData || !storeCol) return [];
+    if (!mergedData || !storeCol || !selChannel) return [];
     const fromDate = dateFrom ? new Date(dateFrom) : null;
     const toDate   = dateTo   ? new Date(dateTo)   : null;
     return unique(
@@ -472,11 +485,9 @@ export default function Dashboard() {
           const channel  = String(row['Channel']  ?? '').trim();
           const province = String(row['Province'] ?? '').trim();
           const rep      = getRepName(row);
-          const source   = String(row['_source']  ?? '').trim();
-          if (selChannels.length  > 0 && selChannels.length  < allChannels.length  && !selChannels.includes(channel))   return false;
+          if (channel !== selChannel) return false;
           if (selProvinces.length > 0 && selProvinces.length < allProvinces.length && !selProvinces.includes(province)) return false;
           if (selReps.length      > 0 && selReps.length      < allReps.length      && !selReps.includes(rep))           return false;
-          if (selSources.length   > 0 && selSources.length   < allSources.length   && !selSources.includes(source))     return false;
           if (fromDate || toDate) {
             const rowDate = parseDMY(String(row['Date'] ?? ''));
             if (rowDate) {
@@ -489,14 +500,12 @@ export default function Dashboard() {
         .map(r => String(r[storeCol] ?? '').trim())
         .filter(Boolean)
     );
-  }, [mergedData, storeCol, selChannels, selProvinces, selReps, selSources, dateFrom, dateTo, allChannels.length, allProvinces.length, allReps.length, allSources.length]);
+  }, [mergedData, storeCol, selChannel, selProvinces, selReps, dateFrom, dateTo, allProvinces.length, allReps.length]);
 
   useEffect(() => {
-    setSelChannels(allChannels);
     setSelProvinces(allProvinces);
     setSelReps(allReps);
-    setSelSources(allSources);
-  }, [allChannels, allProvinces, allReps, allSources]);
+  }, [allProvinces, allReps]);
 
   // Keep selStores in sync when availableStores shrinks (due to other filter changes)
   useEffect(() => {
@@ -508,19 +517,17 @@ export default function Dashboard() {
   }, [availableStores]);
 
   const filteredRows = useMemo(() => {
-    if (!mergedData) return [];
+    if (!mergedData || !selChannel) return [];
     const fromDate = dateFrom ? new Date(dateFrom) : null;
     const toDate   = dateTo   ? new Date(dateTo)   : null;
     return mergedData.rows.filter(row => {
       const channel  = String(row['Channel']  ?? '').trim();
       const province = String(row['Province'] ?? '').trim();
       const rep      = getRepName(row);
-      const source   = String(row['_source']  ?? '').trim();
       const store    = storeCol ? String(row[storeCol] ?? '').trim() : '';
-      if (selChannels.length  > 0 && selChannels.length  < allChannels.length   && !selChannels.includes(channel))   return false;
+      if (channel !== selChannel) return false;
       if (selProvinces.length > 0 && selProvinces.length < allProvinces.length  && !selProvinces.includes(province)) return false;
       if (selReps.length      > 0 && selReps.length      < allReps.length       && !selReps.includes(rep))           return false;
-      if (selSources.length   > 0 && selSources.length   < allSources.length    && !selSources.includes(source))     return false;
       if (selStores.length    > 0 && selStores.length    < availableStores.length && !selStores.includes(store))     return false;
       if (fromDate || toDate) {
         const rowDate = parseDMY(String(row['Date'] ?? ''));
@@ -531,7 +538,7 @@ export default function Dashboard() {
       }
       return true;
     });
-  }, [mergedData, storeCol, selChannels, selProvinces, selReps, selSources, selStores, dateFrom, dateTo, allChannels.length, allProvinces.length, allReps.length, allSources.length, availableStores.length]);
+  }, [mergedData, storeCol, selChannel, selProvinces, selReps, selStores, dateFrom, dateTo, allProvinces.length, allReps.length, availableStores.length]);
 
   const kpis = useMemo(() => ({
     stores:    new Set(filteredRows.map(r => String(r['Store'] ?? r['Store Name'] ?? '').trim()).filter(Boolean)).size,
@@ -541,12 +548,32 @@ export default function Dashboard() {
     provinces: new Set(filteredRows.map(r => String(r['Province'] ?? '').trim()).filter(Boolean)).size,
   }), [filteredRows]);
 
+  // Fetch channel data when user selects a channel
+  const loadChannelData = useCallback(async (channel: string) => {
+    if (!channel) { setLoadedFiles([]); return; }
+    setChannelLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/sp-cache?channel=${encodeURIComponent(channel)}`, { cache: 'no-store' });
+      const data = await res.json() as ChannelData;
+      setLoadedFiles(data?.files ?? []);
+    } catch {
+      setError(`Failed to load ${channel} data`);
+      setLoadedFiles([]);
+    } finally {
+      setChannelLoading(false);
+    }
+  }, []);
+
   const handleFiles = useCallback(async (files: FileList | File[]) => {
     const fileArray = Array.from(files).filter(f => f.name.match(/\.xlsx?$/i));
     if (fileArray.length === 0) { setError('Please upload Excel files (.xlsx or .xls)'); return; }
     setUploading(true);
     setError(null);
-    const results: LoadedFile[] = [];
+
+    // Group parsed results by detected channel
+    const byChannel = new Map<string, LoadedFile[]>();
+
     for (const file of fileArray) {
       try {
         const fd = new FormData();
@@ -555,47 +582,75 @@ export default function Dashboard() {
         const json = await res.json();
         if (!res.ok) throw new Error(json.error ?? 'Parse failed');
         const parsed = json as ParseResult;
-        results.push({
+
+        // Auto-detect channel from row data
+        const channels = unique(parsed.rows.map(r => String(r['Channel'] ?? '').trim()).filter(Boolean));
+        const channel = channels[0] || stripExt(file.name);
+
+        const loadedFile: LoadedFile = {
           name: stripExt(file.name), fileName: file.name,
           rowCount: parsed.rows.length, headers: parsed.headers,
           imageColumns: parsed.imageColumns, rows: parsed.rows,
           imageFolderName: parsed.imageFolderName ?? '',
-        });
+          uploadedAt: new Date().toISOString(),
+          uploadedBy: session?.name ?? 'Unknown',
+          channel,
+        };
+
+        if (!byChannel.has(channel)) byChannel.set(channel, []);
+        byChannel.get(channel)!.push(loadedFile);
       } catch (e) {
         setError(`Failed to parse "${file.name}": ${e instanceof Error ? e.message : 'Unknown error'}`);
       }
     }
-    if (results.length > 0) {
-      setLoadedFiles(prev => {
-        // Build set of all Visit UUIDs already in loaded data
-        const seen = new Set(
-          prev.flatMap(f => f.rows.map(r => String(r['Visit UUID'] ?? '').trim())).filter(Boolean)
-        );
-        const deduped: LoadedFile[] = [];
-        for (const result of results) {
-          const filteredRows = result.rows.filter(r => {
-            const uuid = String(r['Visit UUID'] ?? '').trim();
-            if (!uuid) return true; // no UUID — always include
-            if (seen.has(uuid)) return false; // duplicate — skip
-            seen.add(uuid); // register so intra-batch dupes are also caught
-            return true;
-          });
-          const skipped = result.rows.length - filteredRows.length;
-          if (filteredRows.length === 0 && skipped > 0) {
-            // All rows were duplicates — skip file but surface a notice
-            setError(`"${result.fileName}": all ${skipped} rows already loaded (duplicates skipped).`);
-            continue;
-          }
-          deduped.push({ ...result, rows: filteredRows, rowCount: filteredRows.length });
+
+    // POST each channel's files to SP (server handles merge + dedup)
+    for (const [channel, channelFiles] of byChannel) {
+      try {
+        const postRes = await fetch('/api/sp-cache', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            updatedBy: session?.name ?? 'Unknown',
+            channel,
+            files: channelFiles,
+          }),
+        });
+        const postJson = await postRes.json();
+        if (postJson.added === 0) {
+          setError(`"${channel}": all rows already exist (duplicates skipped).`);
         }
-        return [...prev, ...deduped];
-      });
+      } catch (err) {
+        console.error('Cache save failed:', err);
+      }
     }
+
+    // Refresh index
+    try {
+      const idxRes = await fetch('/api/sp-cache', { cache: 'no-store' });
+      const idx = await idxRes.json() as IndexPayload | null;
+      if (idx?.channels?.length) {
+        setIndexChannels(idx.channels);
+        setCacheInfo({ updatedAt: idx.updatedAt, updatedBy: idx.updatedBy });
+      }
+    } catch { /* ignore */ }
+
+    // If user already has a channel selected and we just uploaded to it, refresh that channel's data
+    const uploadedChannels = [...byChannel.keys()];
+    if (selChannel && uploadedChannels.includes(selChannel)) {
+      await loadChannelData(selChannel);
+    } else if (uploadedChannels.length === 1 && !selChannel) {
+      // Auto-select the uploaded channel
+      const ch = uploadedChannels[0];
+      setSelChannel(ch);
+      await loadChannelData(ch);
+    }
+
     setUploading(false);
-  }, []);
+  }, [session, selChannel, loadChannelData]);
 
   const removeFile = (name: string) => setLoadedFiles(prev => prev.filter(f => f.name !== name));
-  const clearAll   = () => { setLoadedFiles([]); setError(null); setColWidths({}); };
+  const clearAll   = () => { setLoadedFiles([]); setSelChannel(''); setError(null); setColWidths({}); };
 
   const loadSqlData = useCallback(async () => {
     setSqlLoading(true);
@@ -618,18 +673,17 @@ export default function Dashboard() {
       setSqlLoading(false);
     }
   }, [sqlDateFrom, sqlDateTo]);
-  // Auto-load from SP cache on first render once auth is confirmed
+  // Auto-load index from SP cache on first render once auth is confirmed
   const autoLoaded = useRef(false);
   useEffect(() => {
     if (!authChecked || autoLoaded.current) return;
     autoLoaded.current = true;
     setCacheLoading(true);
-    fetch('/api/sp-cache')
+    fetch('/api/sp-cache', { cache: 'no-store' })
       .then(r => r.json())
-      .then((data: CachePayload | null) => {
-        if (data?.files?.length) {
-          restoringFromCache.current = true;
-          setLoadedFiles(data.files);
+      .then((data: IndexPayload | null) => {
+        if (data?.channels?.length) {
+          setIndexChannels(data.channels);
           setCacheInfo({ updatedAt: data.updatedAt, updatedBy: data.updatedBy });
         }
       })
@@ -637,19 +691,6 @@ export default function Dashboard() {
       .finally(() => setCacheLoading(false));
   }, [authChecked]);
 
-  // Save to SP cache whenever loadedFiles changes (Excel mode only)
-  useEffect(() => {
-    if (restoringFromCache.current) {
-      restoringFromCache.current = false;
-      return;
-    }
-    if (dataMode !== 'excel' || loadedFiles.length === 0 || !session) return;
-    fetch('/api/sp-cache', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ updatedAt: new Date().toISOString(), updatedBy: session.name, files: loadedFiles }),
-    }).catch(err => console.error('Cache save failed:', err));
-  }, [loadedFiles, dataMode, session]);
 
   // Auto-refresh every 2 hours in SQL mode
   useEffect(() => {
@@ -659,9 +700,8 @@ export default function Dashboard() {
   }, [dataMode, loadedFiles.length, sqlLoading, loadSqlData]);
 
   const clearFilters = () => {
-    setSelChannels(allChannels); setSelProvinces(allProvinces);
-    setSelReps(allReps);         setSelSources(allSources);
-    setSelStores(availableStores);
+    setSelChannel('');           setSelProvinces(allProvinces);
+    setSelReps(allReps);         setSelStores(availableStores);
     setDateFrom('');             setDateTo('');
   };
 
@@ -700,12 +740,20 @@ export default function Dashboard() {
               <p className="text-gray-400 text-xs">{session?.email}</p>
             </div>
             {session?.isAdmin && (
-              <button onClick={() => router.push('/admin/users')} className="text-gray-400 hover:text-[#1B3A6B] text-xs flex items-center gap-1 transition-colors" title="Manage Users">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a4 4 0 00-5.477-3.716M9 20H4v-2a4 4 0 015.477-3.716M15 7a4 4 0 11-8 0 4 4 0 018 0z" />
-                </svg>
-                Users
-              </button>
+              <>
+                <button onClick={() => router.push('/admin/users')} className="text-gray-400 hover:text-[#1B3A6B] text-xs flex items-center gap-1 transition-colors" title="Manage Users">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a4 4 0 00-5.477-3.716M9 20H4v-2a4 4 0 015.477-3.716M15 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                  </svg>
+                  Users
+                </button>
+                <button onClick={() => router.push('/admin/data')} className="text-gray-400 hover:text-[#1B3A6B] text-xs flex items-center gap-1 transition-colors" title="Loaded Data">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2 1.5 3 3.5 3h9c2 0 3.5-1 3.5-3V7c0-2-1.5-3-3.5-3h-9C5.5 4 4 5 4 7zM9 11h6M9 15h4" />
+                  </svg>
+                  Data
+                </button>
+              </>
             )}
             <button onClick={handleLogout} className="text-gray-400 hover:text-[#1B3A6B] text-xs flex items-center gap-1 transition-colors">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -719,16 +767,16 @@ export default function Dashboard() {
 
       <main className="max-w-[1600px] mx-auto px-6 py-6">
 
-        {/* Loading from cache */}
-        {loadedFiles.length === 0 && cacheLoading && (
+        {/* Loading index from cache */}
+        {indexChannels.length === 0 && cacheLoading && (
           <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-16 text-center">
             <div className="w-8 h-8 border-2 border-[#1B3A6B] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
             <p className="text-sm text-gray-500">Loading latest data...</p>
           </div>
         )}
 
-        {/* Mode Toggle + Load Zone */}
-        {loadedFiles.length === 0 && !cacheLoading && (
+        {/* Mode Toggle + Load Zone — show when no index and not loading */}
+        {indexChannels.length === 0 && !cacheLoading && (
           <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
             {/* Mode tabs */}
             <div className="flex border-b border-gray-200">
@@ -832,80 +880,32 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Dashboard */}
-        {loadedFiles.length > 0 && mergedData && (
+        {/* Dashboard — show when index has channels */}
+        {indexChannels.length > 0 && (
           <>
-            {/* Loaded Files Panel */}
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-5">
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <p className="text-sm font-semibold text-gray-700">
-                    Loaded Files
-                    <span className="ml-2 text-xs font-normal text-gray-400">
-                      {loadedFiles.length} file{loadedFiles.length !== 1 ? 's' : ''} · {mergedData.rows.length.toLocaleString()} total rows
-                    </span>
-                  </p>
-                  {cacheInfo && (
-                    <p className="text-xs text-gray-400 mt-0.5">
-                      Cached {new Date(cacheInfo.updatedAt).toLocaleString('en-ZA', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} by {cacheInfo.updatedBy}
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  {(uploading || sqlLoading) && <div className="w-4 h-4 border-2 border-[#1B3A6B] border-t-transparent rounded-full animate-spin" />}
-                  {dataMode === 'sql' ? (
-                    <button
-                      type="button"
-                      onClick={loadSqlData}
-                      disabled={sqlLoading}
-                      className="cursor-pointer inline-flex items-center gap-1.5 text-xs text-[#1B3A6B] border border-[#1B3A6B] px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors font-medium disabled:opacity-50"
-                    >
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                      </svg>
-                      Refresh
-                    </button>
-                  ) : (
-                    <label className="cursor-pointer inline-flex items-center gap-1.5 text-xs text-[#1B3A6B] border border-[#1B3A6B] px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors font-medium">
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                      </svg>
-                      Add Files
-                      <input type="file" accept=".xlsx,.xls" multiple className="hidden"
-                        onChange={e => { if (e.target.files) handleFiles(e.target.files); }} />
-                    </label>
-                  )}
-                  <button onClick={clearAll} className="text-xs text-red-500 border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors">
-                    Clear
-                  </button>
-                </div>
+            {/* Error from file upload */}
+            {error && (
+              <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-2 mb-5">
+                <p className="text-red-600 text-xs">{error}</p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {loadedFiles.map(f => (
-                  <div key={f.name} className="flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-lg px-3 py-1.5">
-                    <svg className="w-3.5 h-3.5 text-[#1B3A6B] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    <span className="text-xs font-medium text-[#1B3A6B] max-w-[220px] truncate" title={f.fileName}>{f.name}</span>
-                    <span className="text-xs text-gray-400">{f.rowCount.toLocaleString()} rows</span>
-                    <button onClick={() => removeFile(f.name)} className="text-gray-400 hover:text-red-500 transition-colors ml-1" title={`Remove ${f.name}`}>
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                ))}
-              </div>
-              {error && <p className="mt-2 text-red-600 text-xs">{error}</p>}
-            </div>
+            )}
 
             {/* Filter Bar */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-5">
               <div className="flex flex-wrap items-end gap-4">
-                {allSources.length > 1 && (
-                  <MultiSelect label="Source" items={allSources} selected={selSources} onChange={setSelSources} />
-                )}
-                <MultiSelect label="Channel"  items={allChannels}    selected={selChannels}  onChange={setSelChannels} />
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">Channel</label>
+                  <select
+                    value={selChannel}
+                    onChange={e => { const ch = e.target.value; setSelChannel(ch); loadChannelData(ch); }}
+                    className="px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-700 hover:border-[#1B3A6B] focus:outline-none focus:border-[#1B3A6B] transition-colors min-w-[160px]"
+                  >
+                    <option value="">Select channel...</option>
+                    {allChannels.map(ch => (
+                      <option key={ch} value={ch}>{ch}</option>
+                    ))}
+                  </select>
+                </div>
                 <MultiSelect label="Province" items={allProvinces}   selected={selProvinces} onChange={setSelProvinces} />
                 {storeCol && availableStores.length > 0 && (
                   <MultiSelect label="Store" items={availableStores} selected={selStores}   onChange={setSelStores} />
@@ -929,31 +929,104 @@ export default function Dashboard() {
               </div>
             </div>
 
+            {/* Channel loading indicator */}
+            {channelLoading && (
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-12 text-center mb-5">
+                <div className="w-8 h-8 border-2 border-[#1B3A6B] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                <p className="text-sm text-gray-500">Loading {selChannel} data...</p>
+              </div>
+            )}
+
+            {/* Prompt to select channel when none is selected */}
+            {!selChannel && !channelLoading && (
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-12 text-center mb-5">
+                <p className="text-gray-500 text-sm">Select a channel above to view data</p>
+              </div>
+            )}
+
             {/* KPI Cards */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-5">
-              <KpiCard label="Stores Visited"     value={kpis.stores}    icon="🏪" />
-              <KpiCard label="Surveys Completed"  value={kpis.surveys}   icon="📋" />
-              <KpiCard label="Reps Active"         value={kpis.reps}      icon="👤" />
-              <KpiCard label="Channels"            value={kpis.channels}  icon="📡" />
-              <KpiCard label="Provinces"           value={kpis.provinces} icon="🗺️" />
-            </div>
+            {mergedData && selChannel && !channelLoading && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-5">
+                <KpiCard label="Stores Visited"     value={kpis.stores}    icon="🏪" />
+                <KpiCard label="Surveys Completed"  value={kpis.surveys}   icon="📋" />
+                <KpiCard label="Reps Active"         value={kpis.reps}      icon="👤" />
+                <KpiCard label="Channels"            value={kpis.channels}  icon="📡" />
+                <KpiCard label="Provinces"           value={kpis.provinces} icon="🗺️" />
+              </div>
+            )}
 
             {/* Data Table */}
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-                <p className="text-sm font-semibold text-gray-700">
-                  Survey Results
-                  <span className="ml-2 text-xs font-normal text-gray-400">
-                    {filteredRows.length} of {mergedData.rows.length} rows
-                  </span>
-                </p>
-                <p className="text-xs text-gray-400">Drag column edges to resize</p>
+            {mergedData && selChannel && !channelLoading && (
+            <div className={isFullscreen ? 'fixed inset-0 z-50 bg-white flex flex-col' : 'bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden'}>
+              <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between shrink-0">
+                <div>
+                  <div className="flex items-center gap-3">
+                    <p className="text-sm font-semibold text-gray-700">
+                      Survey Results
+                      <span className="ml-2 text-xs font-normal text-gray-400">
+                        {filteredRows.length} of {mergedData.rows.length} rows
+                      </span>
+                    </p>
+                    <div className="flex items-center gap-2">
+                      {(uploading || sqlLoading) && <div className="w-4 h-4 border-2 border-[#1B3A6B] border-t-transparent rounded-full animate-spin" />}
+                      {dataMode === 'sql' ? (
+                        <button
+                          type="button"
+                          onClick={loadSqlData}
+                          disabled={sqlLoading}
+                          className="cursor-pointer inline-flex items-center gap-1 text-xs text-[#1B3A6B] border border-[#1B3A6B] px-2 py-1 rounded hover:bg-blue-50 transition-colors font-medium disabled:opacity-50"
+                        >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                          Refresh
+                        </button>
+                      ) : (
+                        <label className="cursor-pointer inline-flex items-center gap-1 text-xs text-[#1B3A6B] border border-[#1B3A6B] px-2 py-1 rounded hover:bg-blue-50 transition-colors font-medium">
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                          </svg>
+                          Add Files
+                          <input type="file" accept=".xlsx,.xls" multiple className="hidden"
+                            onChange={e => { if (e.target.files) handleFiles(e.target.files); }} />
+                        </label>
+                      )}
+                      <button onClick={clearAll} className="text-xs text-red-500 border border-red-200 px-2 py-1 rounded hover:bg-red-50 transition-colors">
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  {cacheInfo && (
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      Cached {new Date(cacheInfo.updatedAt).toLocaleString('en-ZA', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} by {cacheInfo.updatedBy}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <p className="text-xs text-gray-400">Drag column edges to resize</p>
+                  <button
+                    type="button"
+                    onClick={() => setIsFullscreen(v => !v)}
+                    className="text-gray-400 hover:text-[#1B3A6B] transition-colors"
+                    title={isFullscreen ? 'Exit Fullscreen (Esc)' : 'Fullscreen'}
+                  >
+                    {isFullscreen ? (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
               </div>
               <div
                 ref={tableScrollRef}
                 onScroll={onTableScroll}
-                className="hide-x-scrollbar"
-                style={{ overflowX: 'scroll', maxHeight: '70vh' }}
+                className={isFullscreen ? 'hide-x-scrollbar flex-1' : 'hide-x-scrollbar'}
+                style={{ overflowX: 'scroll', overflowY: 'auto', maxHeight: isFullscreen ? undefined : '70vh' }}
               >
                 <table
                   className="text-sm border-collapse"
@@ -1104,6 +1177,7 @@ export default function Dashboard() {
                 <div style={{ width: `${totalTableW}px`, height: '1px' }} />
               </div>
             </div>
+            )}
           </>
         )}
       </main>
