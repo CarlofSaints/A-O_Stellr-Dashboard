@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchSpFile, uploadSpFile } from '@/lib/graph-oj';
+import { fetchSpFile, uploadSpFile, deleteSpFile } from '@/lib/graph-oj';
 import type { LoadedFile } from '@/lib/types';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -8,6 +8,10 @@ interface ChannelSummary {
   name: string;
   fileCount: number;
   rowCount: number;
+  /** Original Excel filenames that contributed rows to this channel.
+   *  Used by the dashboard to determine which channels can be selected together
+   *  (channels sharing at least one source filename came from the same upload). */
+  sources?: string[];
 }
 
 interface IndexPayload {
@@ -111,10 +115,12 @@ async function migrateIfNeeded(): Promise<IndexPayload | null> {
   for (const [name, files] of buckets) {
     const channelData: ChannelData = { files };
     await uploadSpFile(channelPath(name), JSON.stringify(channelData));
+    const sources = [...new Set(files.map(f => f.fileName).filter(Boolean))];
     channelSummaries.push({
       name,
       fileCount: files.length,
       rowCount: files.reduce((s, f) => s + f.rowCount, 0),
+      sources,
     });
   }
 
@@ -127,6 +133,34 @@ async function migrateIfNeeded(): Promise<IndexPayload | null> {
   await uploadSpFile(indexPath(), JSON.stringify(newIndex));
 
   return newIndex;
+}
+
+// ─── One-time backfill: populate `sources` for legacy index entries ─────────
+// Channels uploaded before the sources feature was added have no `sources`
+// field. On first load after deploy, fetch each such channel's cached file
+// and compute sources from its files' fileNames, then write the index back.
+
+async function backfillSourcesIfNeeded(idx: IndexPayload): Promise<IndexPayload> {
+  const stale = idx.channels.filter(c => !c.sources);
+  if (stale.length === 0) return idx;
+
+  for (const ch of stale) {
+    try {
+      const data = await fetchJson<ChannelData>(channelPath(ch.name));
+      const sources = [...new Set((data?.files ?? []).map(f => f.fileName).filter(Boolean))];
+      ch.sources = sources;
+    } catch (err) {
+      console.error(`Backfill failed for channel "${ch.name}":`, err);
+      ch.sources = []; // mark as attempted so we don't retry forever
+    }
+  }
+
+  try {
+    await uploadSpFile(indexPath(), JSON.stringify(idx));
+  } catch (err) {
+    console.error('Backfill: failed to write updated index:', err);
+  }
+  return idx;
 }
 
 // ─── Route handlers ──────────────────────────────────────────────────────────
@@ -147,10 +181,12 @@ export async function GET(req: NextRequest) {
     }
 
     // Return index (with migration fallback)
-    const idx = await migrateIfNeeded();
+    let idx = await migrateIfNeeded();
     if (!idx) {
       return NextResponse.json(null, { headers: NO_CACHE });
     }
+    // One-time backfill of `sources` for channels uploaded before the feature
+    idx = await backfillSourcesIfNeeded(idx);
     return NextResponse.json(idx, { headers: NO_CACHE });
   } catch (err) {
     console.error('SP cache GET error:', err);
@@ -182,12 +218,16 @@ export async function POST(req: NextRequest) {
     const channelData: ChannelData = { files: mergedFiles };
     await uploadSpFile(channelPath(channel), JSON.stringify(channelData));
 
-    // 4. Update index
+    // 4. Update index — compute sources cumulatively from ALL merged files
+    //    (each upload adds its filename; over time all sibling channels
+    //     accumulate the same source list and remain co-selectable)
     let idx = await fetchJson<IndexPayload>(indexPath());
+    const sources = [...new Set(mergedFiles.map(f => f.fileName).filter(Boolean))];
     const channelSummary: ChannelSummary = {
       name: channel,
       fileCount: mergedFiles.length,
       rowCount: mergedFiles.reduce((s, f) => s + f.rowCount, 0),
+      sources,
     };
 
     if (idx) {
@@ -212,5 +252,30 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error('SP cache POST error:', err);
     return NextResponse.json({ error: 'Cache save failed' }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const channel = req.nextUrl.searchParams.get('channel');
+    if (!channel) {
+      return NextResponse.json({ error: 'channel required' }, { status: 400 });
+    }
+
+    // Delete the per-channel SP file (404 is fine — already gone)
+    await deleteSpFile(channelPath(channel));
+
+    // Update index — drop the channel entry
+    const idx = await fetchJson<IndexPayload>(indexPath());
+    if (idx) {
+      idx.channels = idx.channels.filter(c => c.name !== channel);
+      idx.updatedAt = new Date().toISOString();
+      await uploadSpFile(indexPath(), JSON.stringify(idx));
+    }
+
+    return NextResponse.json({ ok: true }, { headers: NO_CACHE });
+  } catch (err) {
+    console.error('SP cache DELETE error:', err);
+    return NextResponse.json({ error: 'Channel reset failed' }, { status: 500 });
   }
 }

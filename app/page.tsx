@@ -3,7 +3,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import type { ParseResult, VisitRow, LoadedFile } from '@/lib/types';
+import type { VisitRow, LoadedFile } from '@/lib/types';
 
 interface Session {
   id: string;
@@ -16,6 +16,7 @@ interface ChannelSummary {
   name: string;
   fileCount: number;
   rowCount: number;
+  sources?: string[];
 }
 
 interface IndexPayload {
@@ -82,10 +83,6 @@ function getRepName(row: VisitRow): string {
 
 function unique(arr: string[]): string[] {
   return [...new Set(arr.filter(Boolean))].sort();
-}
-
-function stripExt(filename: string): string {
-  return filename.replace(/\.[^/.]+$/, '');
 }
 
 /**
@@ -161,23 +158,34 @@ function ResizableTh({
 // ─── MultiSelect with search ──────────────────────────────────────────────────
 
 function MultiSelect({
-  label, items, selected, onChange,
+  label, items, selected, onChange, disabledItems, disabledHint,
 }: {
   label: string;
   items: string[];
   selected: string[];
   onChange: (v: string[]) => void;
+  /** Items that should appear grayed out and cannot be toggled. */
+  disabledItems?: Set<string>;
+  /** Tooltip shown on disabled items. */
+  disabledHint?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const ref = useRef<HTMLDivElement>(null);
-  const all = selected.length === items.length;
+
+  // Items the user can actually interact with
+  const enabledItems = useMemo(
+    () => items.filter(i => !disabledItems?.has(i)),
+    [items, disabledItems]
+  );
+  const all = enabledItems.length > 0 && selected.length === enabledItems.length;
 
   const filtered = query
     ? items.filter(i => i.toLowerCase().includes(query.toLowerCase()))
     : items;
 
   const toggle = (item: string) => {
+    if (disabledItems?.has(item)) return;
     onChange(selected.includes(item) ? selected.filter(s => s !== item) : [...selected, item]);
   };
 
@@ -201,9 +209,11 @@ function MultiSelect({
         className="w-full flex items-center justify-between px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-left hover:border-[#1B3A6B] transition-colors min-w-[160px]"
       >
         <span className="truncate text-gray-700">
-          {selected.length === 0 || selected.length === items.length
+          {selected.length === 0
             ? `All ${label}`
-            : `${selected.length} selected`}
+            : selected.length === enabledItems.length && enabledItems.length === items.length
+              ? `All ${label}`
+              : `${selected.length} selected`}
         </span>
         <svg
           className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ml-2 ${open ? 'rotate-180' : ''}`}
@@ -240,7 +250,7 @@ function MultiSelect({
           <div className="max-h-56 overflow-y-auto">
             <button
               type="button"
-              onClick={() => onChange(all ? [] : [...items])}
+              onClick={() => onChange(all ? [] : [...enabledItems])}
               className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-[#1B3A6B] hover:bg-blue-50 border-b border-gray-100"
             >
               <span className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${all ? 'bg-[#1B3A6B] border-[#1B3A6B]' : 'border-gray-400'}`}>
@@ -257,12 +267,15 @@ function MultiSelect({
             ) : (
               filtered.map(item => {
                 const checked = selected.includes(item);
+                const disabled = disabledItems?.has(item) ?? false;
                 return (
                   <button
                     key={item}
                     type="button"
                     onClick={() => toggle(item)}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-50"
+                    disabled={disabled}
+                    title={disabled ? disabledHint : undefined}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm ${disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-gray-50'}`}
                   >
                     <span className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${checked ? 'bg-[#1B3A6B] border-[#1B3A6B]' : 'border-gray-400'}`}>
                       {checked && (
@@ -340,25 +353,14 @@ export default function Dashboard() {
   const [authChecked, setAuthChecked] = useState(false);
   const router = useRouter();
 
-  const [dataMode, setDataMode] = useState<'excel' | 'sql'>('excel');
   const [loadedFiles, setLoadedFiles] = useState<LoadedFile[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [dragOver, setDragOver] = useState(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [cacheLoading, setCacheLoading] = useState(false);
   const [channelLoading, setChannelLoading] = useState(false);
   const [cacheInfo, setCacheInfo] = useState<{ updatedAt: string; updatedBy: string } | null>(null);
   const [indexChannels, setIndexChannels] = useState<ChannelSummary[]>([]);
-
-  // SQL mode state
-  const today = new Date();
-  const sevenAgo = new Date(today); sevenAgo.setDate(today.getDate() - 7);
-  const fmtDate = (d: Date) => d.toISOString().slice(0, 10);
-  const [sqlDateFrom, setSqlDateFrom] = useState(fmtDate(sevenAgo));
-  const [sqlDateTo,   setSqlDateTo]   = useState(fmtDate(today));
-  const [sqlLoading,  setSqlLoading]  = useState(false);
 
   // Dual-scroll sync refs
   const tableScrollRef  = useRef<HTMLDivElement>(null);
@@ -379,7 +381,7 @@ export default function Dashboard() {
     setColWidths(prev => ({ ...prev, [key]: w }));
   }, []);
 
-  const [selChannel, setSelChannel] = useState<string>('');
+  const [selChannels, setSelChannels] = useState<string[]>([]);
   const [selProvinces, setSelProvinces] = useState<string[]>([]);
   const [selReps, setSelReps] = useState<string[]>([]);
   const [selStores, setSelStores] = useState<string[]>([]);
@@ -465,6 +467,35 @@ export default function Dashboard() {
     () => indexChannels.map(c => c.name).sort(),
     [indexChannels]
   );
+
+  // Map of channel name → set of source filenames (from the SP index)
+  const channelSources = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const c of indexChannels) {
+      map.set(c.name, new Set(c.sources ?? []));
+    }
+    return map;
+  }, [indexChannels]);
+
+  // Channels NOT compatible with the current selection (grayed out in the selector).
+  // Compatible = shares at least one source filename with the union of sources of
+  // currently-selected channels. Empty selection → everything enabled.
+  const incompatibleChannels = useMemo(() => {
+    const disabled = new Set<string>();
+    if (selChannels.length === 0) return disabled;
+    const selectedSources = new Set<string>();
+    for (const sel of selChannels) {
+      const ss = channelSources.get(sel);
+      if (ss) for (const s of ss) selectedSources.add(s);
+    }
+    for (const c of allChannels) {
+      if (selChannels.includes(c)) continue; // never disable already-selected
+      const cs = channelSources.get(c);
+      const compatible = cs && [...cs].some(s => selectedSources.has(s));
+      if (!compatible) disabled.add(c);
+    }
+    return disabled;
+  }, [allChannels, selChannels, channelSources]);
   const allProvinces = useMemo(
     () => unique((mergedData?.rows ?? []).map(r => String(r['Province'] ?? '').trim()).filter(Boolean)),
     [mergedData]
@@ -476,7 +507,7 @@ export default function Dashboard() {
 
   // Stores available given current channel/province/rep/date selections (cascaded)
   const availableStores = useMemo(() => {
-    if (!mergedData || !storeCol || !selChannel) return [];
+    if (!mergedData || !storeCol || selChannels.length === 0) return [];
     const fromDate = dateFrom ? new Date(dateFrom) : null;
     const toDate   = dateTo   ? new Date(dateTo)   : null;
     return unique(
@@ -485,7 +516,7 @@ export default function Dashboard() {
           const channel  = String(row['Channel']  ?? '').trim();
           const province = String(row['Province'] ?? '').trim();
           const rep      = getRepName(row);
-          if (channel !== selChannel) return false;
+          if (!selChannels.includes(channel)) return false;
           if (selProvinces.length > 0 && selProvinces.length < allProvinces.length && !selProvinces.includes(province)) return false;
           if (selReps.length      > 0 && selReps.length      < allReps.length      && !selReps.includes(rep))           return false;
           if (fromDate || toDate) {
@@ -500,7 +531,7 @@ export default function Dashboard() {
         .map(r => String(r[storeCol] ?? '').trim())
         .filter(Boolean)
     );
-  }, [mergedData, storeCol, selChannel, selProvinces, selReps, dateFrom, dateTo, allProvinces.length, allReps.length]);
+  }, [mergedData, storeCol, selChannels, selProvinces, selReps, dateFrom, dateTo, allProvinces.length, allReps.length]);
 
   useEffect(() => {
     setSelProvinces(allProvinces);
@@ -517,7 +548,7 @@ export default function Dashboard() {
   }, [availableStores]);
 
   const filteredRows = useMemo(() => {
-    if (!mergedData || !selChannel) return [];
+    if (!mergedData || selChannels.length === 0) return [];
     const fromDate = dateFrom ? new Date(dateFrom) : null;
     const toDate   = dateTo   ? new Date(dateTo)   : null;
     return mergedData.rows.filter(row => {
@@ -525,7 +556,7 @@ export default function Dashboard() {
       const province = String(row['Province'] ?? '').trim();
       const rep      = getRepName(row);
       const store    = storeCol ? String(row[storeCol] ?? '').trim() : '';
-      if (channel !== selChannel) return false;
+      if (!selChannels.includes(channel)) return false;
       if (selProvinces.length > 0 && selProvinces.length < allProvinces.length  && !selProvinces.includes(province)) return false;
       if (selReps.length      > 0 && selReps.length      < allReps.length       && !selReps.includes(rep))           return false;
       if (selStores.length    > 0 && selStores.length    < availableStores.length && !selStores.includes(store))     return false;
@@ -538,7 +569,7 @@ export default function Dashboard() {
       }
       return true;
     });
-  }, [mergedData, storeCol, selChannel, selProvinces, selReps, selStores, dateFrom, dateTo, allProvinces.length, allReps.length, availableStores.length]);
+  }, [mergedData, storeCol, selChannels, selProvinces, selReps, selStores, dateFrom, dateTo, allProvinces.length, allReps.length, availableStores.length]);
 
   const kpis = useMemo(() => ({
     stores:    new Set(filteredRows.map(r => String(r['Store'] ?? r['Store Name'] ?? '').trim()).filter(Boolean)).size,
@@ -548,131 +579,33 @@ export default function Dashboard() {
     provinces: new Set(filteredRows.map(r => String(r['Province'] ?? '').trim()).filter(Boolean)).size,
   }), [filteredRows]);
 
-  // Fetch channel data when user selects a channel
-  const loadChannelData = useCallback(async (channel: string) => {
-    if (!channel) { setLoadedFiles([]); return; }
+  // Fetch one or more channels in parallel and merge their files
+  const loadChannelsData = useCallback(async (channels: string[]) => {
+    if (channels.length === 0) { setLoadedFiles([]); return; }
     setChannelLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/sp-cache?channel=${encodeURIComponent(channel)}`, { cache: 'no-store' });
-      const data = await res.json() as ChannelData;
-      setLoadedFiles(data?.files ?? []);
+      const results = await Promise.all(
+        channels.map(ch =>
+          fetch(`/api/sp-cache?channel=${encodeURIComponent(ch)}`, { cache: 'no-store' })
+            .then(r => r.json() as Promise<ChannelData>)
+        )
+      );
+      const allFiles = results.flatMap(r => r?.files ?? []);
+      setLoadedFiles(allFiles);
     } catch {
-      setError(`Failed to load ${channel} data`);
+      setError(`Failed to load channel data`);
       setLoadedFiles([]);
     } finally {
       setChannelLoading(false);
     }
   }, []);
 
-  const handleFiles = useCallback(async (files: FileList | File[]) => {
-    const fileArray = Array.from(files).filter(f => f.name.match(/\.xlsx?$/i));
-    if (fileArray.length === 0) { setError('Please upload Excel files (.xlsx or .xls)'); return; }
-    setUploading(true);
-    setError(null);
+  // Auto-fetch whenever the channel selection changes
+  useEffect(() => {
+    loadChannelsData(selChannels);
+  }, [selChannels, loadChannelsData]);
 
-    // Group parsed results by detected channel
-    const byChannel = new Map<string, LoadedFile[]>();
-
-    for (const file of fileArray) {
-      try {
-        const fd = new FormData();
-        fd.append('file', file);
-        const res  = await fetch('/api/parse', { method: 'POST', body: fd });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error ?? 'Parse failed');
-        const parsed = json as ParseResult;
-
-        // Auto-detect channel from row data
-        const channels = unique(parsed.rows.map(r => String(r['Channel'] ?? '').trim()).filter(Boolean));
-        const channel = channels[0] || stripExt(file.name);
-
-        const loadedFile: LoadedFile = {
-          name: stripExt(file.name), fileName: file.name,
-          rowCount: parsed.rows.length, headers: parsed.headers,
-          imageColumns: parsed.imageColumns, rows: parsed.rows,
-          imageFolderName: parsed.imageFolderName ?? '',
-          uploadedAt: new Date().toISOString(),
-          uploadedBy: session?.name ?? 'Unknown',
-          channel,
-        };
-
-        if (!byChannel.has(channel)) byChannel.set(channel, []);
-        byChannel.get(channel)!.push(loadedFile);
-      } catch (e) {
-        setError(`Failed to parse "${file.name}": ${e instanceof Error ? e.message : 'Unknown error'}`);
-      }
-    }
-
-    // POST each channel's files to SP (server handles merge + dedup)
-    for (const [channel, channelFiles] of byChannel) {
-      try {
-        const postRes = await fetch('/api/sp-cache', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            updatedBy: session?.name ?? 'Unknown',
-            channel,
-            files: channelFiles,
-          }),
-        });
-        const postJson = await postRes.json();
-        if (postJson.added === 0) {
-          setError(`"${channel}": all rows already exist (duplicates skipped).`);
-        }
-      } catch (err) {
-        console.error('Cache save failed:', err);
-      }
-    }
-
-    // Refresh index
-    try {
-      const idxRes = await fetch('/api/sp-cache', { cache: 'no-store' });
-      const idx = await idxRes.json() as IndexPayload | null;
-      if (idx?.channels?.length) {
-        setIndexChannels(idx.channels);
-        setCacheInfo({ updatedAt: idx.updatedAt, updatedBy: idx.updatedBy });
-      }
-    } catch { /* ignore */ }
-
-    // If user already has a channel selected and we just uploaded to it, refresh that channel's data
-    const uploadedChannels = [...byChannel.keys()];
-    if (selChannel && uploadedChannels.includes(selChannel)) {
-      await loadChannelData(selChannel);
-    } else if (uploadedChannels.length === 1 && !selChannel) {
-      // Auto-select the uploaded channel
-      const ch = uploadedChannels[0];
-      setSelChannel(ch);
-      await loadChannelData(ch);
-    }
-
-    setUploading(false);
-  }, [session, selChannel, loadChannelData]);
-
-  const removeFile = (name: string) => setLoadedFiles(prev => prev.filter(f => f.name !== name));
-  const clearAll   = () => { setLoadedFiles([]); setSelChannel(''); setError(null); setColWidths({}); };
-
-  const loadSqlData = useCallback(async () => {
-    setSqlLoading(true);
-    setError(null);
-    try {
-      const res  = await fetch(`/api/sql-data?dateFrom=${sqlDateFrom}&dateTo=${sqlDateTo}`);
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? 'Query failed');
-      const parsed = json as ParseResult;
-      const label  = `Live Data ${sqlDateFrom} – ${sqlDateTo}`;
-      setLoadedFiles([{
-        name: label, fileName: label,
-        rowCount: parsed.rows.length, headers: parsed.headers,
-        imageColumns: parsed.imageColumns, rows: parsed.rows,
-        imageFolderName: parsed.imageFolderName ?? '',
-      }]);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'SQL query failed');
-    } finally {
-      setSqlLoading(false);
-    }
-  }, [sqlDateFrom, sqlDateTo]);
   // Auto-load index from SP cache on first render once auth is confirmed
   const autoLoaded = useRef(false);
   useEffect(() => {
@@ -692,15 +625,8 @@ export default function Dashboard() {
   }, [authChecked]);
 
 
-  // Auto-refresh every 2 hours in SQL mode
-  useEffect(() => {
-    if (dataMode !== 'sql' || loadedFiles.length === 0) return;
-    const id = setInterval(() => { if (!sqlLoading) loadSqlData(); }, 2 * 60 * 60 * 1000);
-    return () => clearInterval(id);
-  }, [dataMode, loadedFiles.length, sqlLoading, loadSqlData]);
-
   const clearFilters = () => {
-    setSelChannel('');           setSelProvinces(allProvinces);
+    setSelChannels([]);          setSelProvinces(allProvinces);
     setSelReps(allReps);         setSelStores(availableStores);
     setDateFrom('');             setDateTo('');
   };
@@ -775,107 +701,27 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Mode Toggle + Load Zone — show when no index and not loading */}
+        {/* Empty state — no data uploaded yet */}
         {indexChannels.length === 0 && !cacheLoading && (
-          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-            {/* Mode tabs */}
-            <div className="flex border-b border-gray-200">
+          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-16 text-center">
+            <div className="text-5xl mb-4">📂</div>
+            <p className="text-xl font-semibold text-gray-700 mb-2">No data loaded yet</p>
+            <p className="text-gray-400 text-sm mb-6">
+              {session?.isAdmin
+                ? 'Upload Perigee Excel exports from the Data page to get started.'
+                : 'An admin needs to upload data before the dashboard becomes available.'}
+            </p>
+            {session?.isAdmin && (
               <button
                 type="button"
-                onClick={() => { setDataMode('excel'); setError(null); }}
-                className={`flex items-center gap-2 px-6 py-3 text-sm font-semibold transition-colors ${dataMode === 'excel' ? 'text-[#1B3A6B] border-b-2 border-[#1B3A6B] -mb-px' : 'text-gray-500 hover:text-gray-700'}`}
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                Upload Excel
-              </button>
-              <button
-                type="button"
-                disabled
-                className="flex items-center gap-2 px-6 py-3 text-sm font-semibold text-gray-300 cursor-not-allowed select-none"
+                onClick={() => router.push('/admin/data')}
+                className="inline-flex items-center gap-2 bg-[#1B3A6B] text-white px-6 py-2.5 rounded-lg text-sm font-semibold hover:bg-[#152f5a] transition-colors"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2 1.5 3 3.5 3h9c2 0 3.5-1 3.5-3V7c0-2-1.5-3-3.5-3h-9C5.5 4 4 5 4 7zM9 11h6M9 15h4" />
                 </svg>
-                Live Database
+                Go to Data page
               </button>
-            </div>
-
-            {/* Excel upload panel */}
-            {dataMode === 'excel' && (
-              <div
-                className={`p-16 text-center transition-colors ${dragOver ? 'bg-blue-50' : ''}`}
-                style={{ borderRadius: 0 }}
-                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={e => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); }}
-              >
-                {uploading ? (
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="w-10 h-10 border-4 border-[#1B3A6B] border-t-transparent rounded-full animate-spin" />
-                    <p className="text-gray-600 font-medium">Parsing files…</p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="text-5xl mb-4">📊</div>
-                    <p className="text-xl font-semibold text-gray-700 mb-2">Drop your Perigee Excel exports here</p>
-                    <p className="text-gray-400 text-sm mb-1">Load multiple files to combine channels into one view</p>
-                    <p className="text-gray-400 text-sm mb-6">or click to browse for .xlsx files</p>
-                    <label className="cursor-pointer inline-flex items-center gap-2 bg-[#1B3A6B] text-white px-6 py-2.5 rounded-lg text-sm font-semibold hover:bg-[#152f5a] transition-colors">
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                      </svg>
-                      Choose Files
-                      <input type="file" accept=".xlsx,.xls" multiple className="hidden"
-                        onChange={e => { if (e.target.files) handleFiles(e.target.files); }} />
-                    </label>
-                    {error && <p className="mt-4 text-red-600 text-sm">{error}</p>}
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* SQL / Live Database panel */}
-            {dataMode === 'sql' && (
-              <div className="p-16 text-center">
-                {sqlLoading ? (
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="w-10 h-10 border-4 border-[#1B3A6B] border-t-transparent rounded-full animate-spin" />
-                    <p className="text-gray-600 font-medium">Querying database…</p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="text-5xl mb-4">🗄️</div>
-                    <p className="text-xl font-semibold text-gray-700 mb-2">Load live visit data from the database</p>
-                    <p className="text-gray-400 text-sm mb-8">Select a date range and click Load Data</p>
-                    <div className="flex items-end justify-center gap-4 flex-wrap">
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1 text-left">Date From</label>
-                        <input type="date" value={sqlDateFrom} onChange={e => setSqlDateFrom(e.target.value)}
-                          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#1B3A6B]" />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1 text-left">Date To</label>
-                        <input type="date" value={sqlDateTo} onChange={e => setSqlDateTo(e.target.value)}
-                          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#1B3A6B]" />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={loadSqlData}
-                        disabled={!sqlDateFrom || !sqlDateTo}
-                        className="inline-flex items-center gap-2 bg-[#1B3A6B] text-white px-6 py-2 rounded-lg text-sm font-semibold hover:bg-[#152f5a] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M12 5l7 7-7 7" />
-                        </svg>
-                        Load Data
-                      </button>
-                    </div>
-                    {error && <p className="mt-6 text-red-600 text-sm">{error}</p>}
-                  </>
-                )}
-              </div>
             )}
           </div>
         )}
@@ -893,19 +739,14 @@ export default function Dashboard() {
             {/* Filter Bar */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-5">
               <div className="flex flex-wrap items-end gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">Channel</label>
-                  <select
-                    value={selChannel}
-                    onChange={e => { const ch = e.target.value; setSelChannel(ch); loadChannelData(ch); }}
-                    className="px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-700 hover:border-[#1B3A6B] focus:outline-none focus:border-[#1B3A6B] transition-colors min-w-[160px]"
-                  >
-                    <option value="">Select channel...</option>
-                    {allChannels.map(ch => (
-                      <option key={ch} value={ch}>{ch}</option>
-                    ))}
-                  </select>
-                </div>
+                <MultiSelect
+                  label="Channel"
+                  items={allChannels}
+                  selected={selChannels}
+                  onChange={setSelChannels}
+                  disabledItems={incompatibleChannels}
+                  disabledHint="From a different upload — deselect the current channel(s) first"
+                />
                 <MultiSelect label="Province" items={allProvinces}   selected={selProvinces} onChange={setSelProvinces} />
                 {storeCol && availableStores.length > 0 && (
                   <MultiSelect label="Store" items={availableStores} selected={selStores}   onChange={setSelStores} />
@@ -933,19 +774,21 @@ export default function Dashboard() {
             {channelLoading && (
               <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-12 text-center mb-5">
                 <div className="w-8 h-8 border-2 border-[#1B3A6B] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                <p className="text-sm text-gray-500">Loading {selChannel} data...</p>
+                <p className="text-sm text-gray-500">
+                  Loading {selChannels.length === 1 ? selChannels[0] : `${selChannels.length} channels`} data...
+                </p>
               </div>
             )}
 
             {/* Prompt to select channel when none is selected */}
-            {!selChannel && !channelLoading && (
+            {selChannels.length === 0 && !channelLoading && (
               <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-12 text-center mb-5">
-                <p className="text-gray-500 text-sm">Select a channel above to view data</p>
+                <p className="text-gray-500 text-sm">Select one or more channels above to view data</p>
               </div>
             )}
 
             {/* KPI Cards */}
-            {mergedData && selChannel && !channelLoading && (
+            {mergedData && selChannels.length > 0 && !channelLoading && (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-5">
                 <KpiCard label="Stores Visited"     value={kpis.stores}    icon="🏪" />
                 <KpiCard label="Surveys Completed"  value={kpis.surveys}   icon="📋" />
@@ -956,46 +799,16 @@ export default function Dashboard() {
             )}
 
             {/* Data Table */}
-            {mergedData && selChannel && !channelLoading && (
+            {mergedData && selChannels.length > 0 && !channelLoading && (
             <div className={isFullscreen ? 'fixed inset-0 z-50 bg-white flex flex-col' : 'bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden'}>
               <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between shrink-0">
                 <div>
-                  <div className="flex items-center gap-3">
-                    <p className="text-sm font-semibold text-gray-700">
-                      Survey Results
-                      <span className="ml-2 text-xs font-normal text-gray-400">
-                        {filteredRows.length} of {mergedData.rows.length} rows
-                      </span>
-                    </p>
-                    <div className="flex items-center gap-2">
-                      {(uploading || sqlLoading) && <div className="w-4 h-4 border-2 border-[#1B3A6B] border-t-transparent rounded-full animate-spin" />}
-                      {dataMode === 'sql' ? (
-                        <button
-                          type="button"
-                          onClick={loadSqlData}
-                          disabled={sqlLoading}
-                          className="cursor-pointer inline-flex items-center gap-1 text-xs text-[#1B3A6B] border border-[#1B3A6B] px-2 py-1 rounded hover:bg-blue-50 transition-colors font-medium disabled:opacity-50"
-                        >
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                          </svg>
-                          Refresh
-                        </button>
-                      ) : (
-                        <label className="cursor-pointer inline-flex items-center gap-1 text-xs text-[#1B3A6B] border border-[#1B3A6B] px-2 py-1 rounded hover:bg-blue-50 transition-colors font-medium">
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                          </svg>
-                          Add Files
-                          <input type="file" accept=".xlsx,.xls" multiple className="hidden"
-                            onChange={e => { if (e.target.files) handleFiles(e.target.files); }} />
-                        </label>
-                      )}
-                      <button onClick={clearAll} className="text-xs text-red-500 border border-red-200 px-2 py-1 rounded hover:bg-red-50 transition-colors">
-                        Clear
-                      </button>
-                    </div>
-                  </div>
+                  <p className="text-sm font-semibold text-gray-700">
+                    Survey Results
+                    <span className="ml-2 text-xs font-normal text-gray-400">
+                      {filteredRows.length} of {mergedData.rows.length} rows
+                    </span>
+                  </p>
                   {cacheInfo && (
                     <p className="text-xs text-gray-400 mt-0.5">
                       Cached {new Date(cacheInfo.updatedAt).toLocaleString('en-ZA', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} by {cacheInfo.updatedBy}

@@ -110,3 +110,28 @@ export async function uploadSpFile(filePath: string, content: string, contentTyp
 
   if (!resp.ok) throw new Error(`SP upload failed: ${resp.status} — ${filePath}`);
 }
+
+/**
+ * Delete a file from SharePoint. Returns true if deleted, false if it didn't exist.
+ */
+export async function deleteSpFile(filePath: string): Promise<boolean> {
+  const token = await getAccessToken();
+  const driveId = await getDriveId(token);
+
+  const encodedPath = filePath
+    .split('/')
+    .map(seg => encodeURIComponent(seg))
+    .join('/');
+
+  const resp = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedPath}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+
+  if (resp.status === 404) return false;
+  if (!resp.ok) throw new Error(`SP delete failed: ${resp.status} — ${filePath}`);
+  return true;
+}
