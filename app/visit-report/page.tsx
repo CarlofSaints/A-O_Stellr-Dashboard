@@ -369,6 +369,22 @@ export default function VisitReportPage() {
     }
   }, [loadData]);
 
+  // ─── Download template ─────────────────────────────────────────────────────
+
+  const downloadTemplate = useCallback((type: 'control' | 'data') => {
+    const headers = type === 'control'
+      ? ['Channel', 'Store Name', 'Store Code']
+      : ['Channel', 'Store Code', 'Store Full Name', 'Check In Date'];
+    const csvRow = headers.join(',');
+    const blob = new Blob([csvRow + '\n'], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = type === 'control' ? 'Site Control File Template.csv' : 'Visit Data Template.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
   // ─── Derived: merge control file + visit data into a unified store universe ─
 
   // Build a map of storeCode → { storeName, channel } from BOTH sources.
@@ -671,9 +687,18 @@ export default function VisitReportPage() {
                       disabled={uploading !== null}
                     />
                   </label>
-                  <p className="text-[10px] text-gray-400 mt-2 text-center">
-                    Excel with columns: Store Name, Store Code, Channel
-                  </p>
+                  <div className="flex items-center justify-center mt-2 gap-1">
+                    <p className="text-[10px] text-gray-400">
+                      Excel with columns: Channel, Store Name, Store Code
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => downloadTemplate('control')}
+                      className="text-[10px] text-[#1B3A6B] hover:underline font-medium"
+                    >
+                      Download Template
+                    </button>
+                  </div>
                 </div>
 
                 {/* Visit Data Card */}
@@ -734,9 +759,18 @@ export default function VisitReportPage() {
                       disabled={uploading !== null}
                     />
                   </label>
-                  <p className="text-[10px] text-gray-400 mt-2 text-center">
-                    Perigee visits export — Channel, Store Code, Store Full Name, Check In Date
-                  </p>
+                  <div className="flex items-center justify-center mt-2 gap-1">
+                    <p className="text-[10px] text-gray-400">
+                      Perigee visits export — Channel, Store Code, Store Full Name, Check In Date
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => downloadTemplate('data')}
+                      className="text-[10px] text-[#1B3A6B] hover:underline font-medium"
+                    >
+                      Download Template
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
