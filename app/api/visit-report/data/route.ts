@@ -11,6 +11,7 @@ interface Visit {
   storeName: string;
   channel: string;
   date: string; // YYYY-MM-DD
+  visitUuid: string;
 }
 
 interface DataPayload {
@@ -116,6 +117,7 @@ export async function POST(req: NextRequest) {
     const storeCodeCol = findCol(headers, /store\s*code/i);
     const storeNameCol = findCol(headers, /store\s*full\s*name/i, /store\s*name/i);
     const dateCol = findCol(headers, /check\s*in\s*date/i, /^date$/i);
+    const uuidCol = findCol(headers, /visit\s*uuid/i, /^uuid$/i);
 
     if (!storeCodeCol || !dateCol) {
       return NextResponse.json(
@@ -130,6 +132,7 @@ export async function POST(req: NextRequest) {
         storeName: storeNameCol ? String(r[storeNameCol] ?? '').trim() : '',
         channel: channelCol ? String(r[channelCol] ?? '').trim() : '',
         date: parseDate(r[dateCol]) ?? '',
+        visitUuid: uuidCol ? String(r[uuidCol] ?? '').trim() : '',
       }))
       .filter(v => v.storeCode && v.date);
 

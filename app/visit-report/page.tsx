@@ -3,6 +3,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
+import * as XLSX from 'xlsx';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ interface Visit {
   storeName: string;
   channel: string;
   date: string; // YYYY-MM-DD
+  visitUuid: string;
 }
 
 interface DataPayload {
@@ -38,14 +40,20 @@ interface DataPayload {
   visits: Visit[];
 }
 
-/** A single row in the visit grid */
 interface GridRow {
   storeName: string;
   storeCode: string;
   channel: string;
   visits: Record<string, boolean>;
   visitCount: number;
-  inControlFile: boolean;
+}
+
+interface WeekCol {
+  weekNum: number;
+  monIso: string;
+  sunIso: string;
+  line1: string; // "WK-14"
+  line2: string; // "06/04 - 12/04"
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -54,7 +62,6 @@ function unique(arr: string[]): string[] {
   return [...new Set(arr.filter(Boolean))].sort();
 }
 
-/** Format YYYY-MM-DD to short display like "Mon 14/04" */
 function fmtDate(iso: string): string {
   const d = new Date(iso + 'T00:00:00');
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -63,35 +70,15 @@ function fmtDate(iso: string): string {
   return `${days[d.getDay()]} ${dd}/${mm}`;
 }
 
-/** Generate array of YYYY-MM-DD strings between from and to (inclusive) */
 function makeDateRange(from: string, to: string): string[] {
   const dates: string[] = [];
   const d = new Date(from + 'T00:00:00');
   const end = new Date(to + 'T00:00:00');
   while (d <= end) {
-    const yy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    dates.push(`${yy}-${mm}-${dd}`);
+    dates.push(isoDate(d));
     d.setDate(d.getDate() + 1);
   }
   return dates;
-}
-
-function currentWeekMon(): string {
-  const d = new Date();
-  const day = d.getDay();
-  const diff = day === 0 ? 6 : day - 1;
-  d.setDate(d.getDate() - diff);
-  return isoDate(d);
-}
-
-function currentWeekSun(): string {
-  const d = new Date();
-  const day = d.getDay();
-  const diff = day === 0 ? 0 : 7 - day;
-  d.setDate(d.getDate() + diff);
-  return isoDate(d);
 }
 
 function isoDate(d: Date): string {
@@ -99,6 +86,20 @@ function isoDate(d: Date): string {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return `${yy}-${mm}-${dd}`;
+}
+
+function currentWeekMon(): string {
+  const d = new Date();
+  const day = d.getDay();
+  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+  return isoDate(d);
+}
+
+function currentWeekSun(): string {
+  const d = new Date();
+  const day = d.getDay();
+  d.setDate(d.getDate() + (day === 0 ? 0 : 7 - day));
+  return isoDate(d);
 }
 
 function weeksInRange(from: string, to: string): number {
@@ -113,6 +114,26 @@ function fmtTimestamp(iso: string): string {
     day: '2-digit', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
   });
+}
+
+/** First Monday of 2026 = Jan 5, 2026 */
+const FIRST_MONDAY = new Date('2026-01-05T00:00:00').getTime();
+
+/** Week number for a given ISO date (WK-1 = Jan 5–11 2026) */
+function weekNumFor(isoStr: string): number {
+  const d = new Date(isoStr + 'T00:00:00').getTime();
+  return Math.floor((d - FIRST_MONDAY) / (7 * 86400000)) + 1;
+}
+
+/** Completion % → conditional format style */
+function completionStyle(pct: number): React.CSSProperties {
+  if (pct < 0) return {}; // sentinel for Total row
+  if (pct >= 100) return { backgroundColor: '#15803d', color: '#fff' };    // green-700 (dark green)
+  if (pct >= 80)  return { backgroundColor: '#22c55e', color: '#fff' };    // green-500
+  if (pct >= 60)  return { backgroundColor: '#86efac', color: '#166534' }; // green-300 / green-800
+  if (pct >= 40)  return { backgroundColor: '#fde68a', color: '#92400e' }; // amber-200 / amber-800
+  if (pct >= 20)  return { backgroundColor: '#fca5a5', color: '#991b1b' }; // red-300 / red-800
+  return { backgroundColor: '#dc2626', color: '#fff' };                     // red-600 (dark red)
 }
 
 // ─── MultiSelect ─────────────────────────────────────────────────────────────
@@ -240,6 +261,41 @@ function MultiSelect({
   );
 }
 
+// ─── Frozen-column cell styles ───────────────────────────────────────────────
+
+const GRID_BORDER = '1px solid #e5e7eb'; // gray-200
+
+type ColWidths = { num: number; ch: number; name: number; code: number };
+
+function frozenOffsets(cw: ColWidths) {
+  return [0, cw.num, cw.num + cw.ch, cw.num + cw.ch + cw.name];
+}
+
+function frozenWidths(cw: ColWidths) {
+  return [cw.num, cw.ch, cw.name, cw.code];
+}
+
+/** Style for a frozen (sticky-left) cell */
+function frozenCell(
+  colIdx: number, cw: ColWidths, bg: string, isHeader: boolean,
+): React.CSSProperties {
+  const offsets = frozenOffsets(cw);
+  const widths = frozenWidths(cw);
+  return {
+    position: 'sticky',
+    left: offsets[colIdx],
+    width: widths[colIdx],
+    minWidth: widths[colIdx],
+    maxWidth: widths[colIdx],
+    zIndex: isHeader ? 30 : 10,
+    backgroundColor: bg,
+    borderRight: GRID_BORDER,
+    borderBottom: GRID_BORDER,
+    boxSizing: 'border-box',
+    ...(colIdx === 3 ? { borderRightWidth: 2, borderRightColor: '#cbd5e1' } : {}), // heavier divider after last frozen col
+  };
+}
+
 // ─── Main Page ───────────────────────────────────────────────────────────────
 
 export default function VisitReportPage() {
@@ -265,6 +321,11 @@ export default function VisitReportPage() {
 
   // Drag-drop highlight
   const [dragOver, setDragOver] = useState<'control' | 'data' | null>(null);
+
+  // Resizable frozen column widths
+  const [cw, setCw] = useState<ColWidths>({ num: 40, ch: 130, name: 260, code: 100 });
+  const cwRef = useRef(cw);
+  cwRef.current = cw;
 
   // Auth check
   useEffect(() => {
@@ -302,6 +363,32 @@ export default function VisitReportPage() {
     router.replace('/login');
   };
 
+  // ─── Column resize handler ──────────────────────────────────────────────────
+
+  const startColResize = useCallback((key: keyof ColWidths, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startW = cwRef.current[key];
+
+    const onMove = (ev: MouseEvent) => {
+      const newW = Math.max(key === 'num' ? 30 : 60, startW + ev.clientX - startX);
+      setCw(prev => ({ ...prev, [key]: newW }));
+    };
+
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, []);
+
   // ─── Upload handlers ───────────────────────────────────────────────────────
 
   const uploadFile = useCallback(async (type: 'control' | 'data', file: File) => {
@@ -315,22 +402,15 @@ export default function VisitReportPage() {
     fd.append('updatedBy', session.name);
 
     try {
-      const res = await fetch(`/api/visit-report/${type}`, {
-        method: 'POST',
-        body: fd,
-      });
+      const res = await fetch(`/api/visit-report/${type}`, { method: 'POST', body: fd });
       const json = await res.json();
-      if (!res.ok) {
-        setUploadError(json.error ?? 'Upload failed');
-        return;
-      }
+      if (!res.ok) { setUploadError(json.error ?? 'Upload failed'); return; }
 
       if (type === 'control') {
         setUploadSuccess(`Control file uploaded: ${json.storeCount} stores across ${json.channelCount} channels`);
       } else {
         setUploadSuccess(`Visit data uploaded: ${json.added} new visits added (${json.uniqueStores} unique stores)${json.duplicatesSkipped ? `, ${json.duplicatesSkipped} duplicates skipped` : ''}`);
       }
-
       await loadData();
     } catch {
       setUploadError('Upload failed — network error');
@@ -369,14 +449,13 @@ export default function VisitReportPage() {
     }
   }, [loadData]);
 
-  // ─── Download template ─────────────────────────────────────────────────────
+  // ─── Download template ────────────────────────────────────────────────────
 
   const downloadTemplate = useCallback((type: 'control' | 'data') => {
     const headers = type === 'control'
       ? ['Channel', 'Store Name', 'Store Code']
       : ['Channel', 'Store Code', 'Store Full Name', 'Check In Date'];
-    const csvRow = headers.join(',');
-    const blob = new Blob([csvRow + '\n'], { type: 'text/csv' });
+    const blob = new Blob([headers.join(',') + '\n'], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -385,86 +464,98 @@ export default function VisitReportPage() {
     URL.revokeObjectURL(url);
   }, []);
 
-  // ─── Derived: merge control file + visit data into a unified store universe ─
+  // ─── Derived: store universe (control-file-only when control exists) ─────
 
-  // Build a map of storeCode → { storeName, channel } from BOTH sources.
-  // Visit data is the primary source; control file supplements with unvisited stores.
+  const controlCodeSet = useMemo(() => {
+    if (!control) return null; // no control file — include everything
+    return new Set(control.stores.map(s => s.storeCode));
+  }, [control]);
+
   const storeMap = useMemo(() => {
-    const map = new Map<string, { storeName: string; channel: string; inControlFile: boolean }>();
+    const map = new Map<string, { storeName: string; channel: string }>();
 
-    // 1. Seed from control file (the "base")
-    for (const s of control?.stores ?? []) {
-      map.set(s.storeCode, { storeName: s.storeName, channel: s.channel, inControlFile: true });
-    }
-
-    // 2. Overlay / add from visit data (visit data wins for storeName/channel)
-    for (const v of visitData?.visits ?? []) {
-      const existing = map.get(v.storeCode);
-      if (existing) {
-        // Visit data enriches — update name/channel if visit data has it
-        if (v.storeName) existing.storeName = v.storeName;
-        if (v.channel) existing.channel = v.channel;
-      } else {
-        // Store only in visit data, not in control file
-        map.set(v.storeCode, {
-          storeName: v.storeName || v.storeCode,
-          channel: v.channel || 'Unknown',
-          inControlFile: false,
-        });
+    if (control) {
+      // Control file is the base — only these stores appear in grids
+      for (const s of control.stores) {
+        map.set(s.storeCode, { storeName: s.storeName, channel: s.channel });
+      }
+      // Enrich with visit data names/channels (but don't add new stores)
+      for (const v of visitData?.visits ?? []) {
+        const existing = map.get(v.storeCode);
+        if (existing) {
+          if (v.storeName) existing.storeName = v.storeName;
+          if (v.channel) existing.channel = v.channel;
+        }
+        // stores NOT in control file are excluded — they go to exceptions
+      }
+    } else {
+      // No control file — visit data is the universe
+      for (const v of visitData?.visits ?? []) {
+        if (!map.has(v.storeCode)) {
+          map.set(v.storeCode, {
+            storeName: v.storeName || v.storeCode,
+            channel: v.channel || 'Unknown',
+          });
+        }
       }
     }
-
     return map;
   }, [control, visitData]);
 
+  // Exceptions: visits whose storeCode is NOT in the control file
+  const exceptions = useMemo(() => {
+    if (!controlCodeSet || !visitData) return [];
+    return visitData.visits
+      .filter(v => !controlCodeSet.has(v.storeCode))
+      .map(v => ({
+        channel: v.channel || 'Unknown',
+        storeCode: v.storeCode,
+        storeName: v.storeName || v.storeCode,
+        visitUuid: v.visitUuid || '',
+        date: v.date,
+      }));
+  }, [controlCodeSet, visitData]);
+
   const hasData = storeMap.size > 0;
 
-  // All channels from the merged universe
   const allChannels = useMemo(
     () => unique([...storeMap.values()].map(s => s.channel)),
     [storeMap]
   );
 
-  // Stores filtered by selected channels — for the Store filter dropdown
   const filteredStoreLabels = useMemo(() => {
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
     const labels: string[] = [];
     for (const [code, info] of storeMap) {
-      if (chSet.has(info.channel)) {
-        labels.push(`${info.storeName} (${code})`);
-      }
+      if (chSet.has(info.channel)) labels.push(`${info.storeName} (${code})`);
     }
     return labels.sort();
   }, [storeMap, selChannels, allChannels]);
 
-  // Date columns for the grid
+  // Date columns
   const dateCols = useMemo(
     () => dateFrom && dateTo ? makeDateRange(dateFrom, dateTo) : [],
     [dateFrom, dateTo]
   );
 
-  // O(1) visit lookup: "storeCode|date"
+  // O(1) visit lookup
   const visitSet = useMemo(() => {
     const set = new Set<string>();
-    for (const v of visitData?.visits ?? []) {
-      set.add(`${v.storeCode}|${v.date}`);
-    }
+    for (const v of visitData?.visits ?? []) set.add(`${v.storeCode}|${v.date}`);
     return set;
   }, [visitData]);
 
-  // Grid rows — one per store in the merged universe matching filters
+  // Grid rows (daily)
   const gridRows = useMemo((): GridRow[] => {
     if (!hasData || dateCols.length === 0) return [];
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
     const stSet = selStores.length > 0 && selStores.length < filteredStoreLabels.length
-      ? new Set(selStores)
-      : null;
+      ? new Set(selStores) : null;
 
     const rows: GridRow[] = [];
     for (const [code, info] of storeMap) {
       if (!chSet.has(info.channel)) continue;
       if (stSet && !stSet.has(`${info.storeName} (${code})`)) continue;
-
       const visits: Record<string, boolean> = {};
       let visitCount = 0;
       for (const d of dateCols) {
@@ -472,30 +563,17 @@ export default function VisitReportPage() {
         visits[d] = has;
         if (has) visitCount++;
       }
-      rows.push({
-        storeName: info.storeName,
-        storeCode: code,
-        channel: info.channel,
-        visits,
-        visitCount,
-        inControlFile: info.inControlFile,
-      });
+      rows.push({ storeName: info.storeName, storeCode: code, channel: info.channel, visits, visitCount });
     }
-
     rows.sort((a, b) => a.channel.localeCompare(b.channel) || a.storeName.localeCompare(b.storeName));
     return rows;
   }, [hasData, storeMap, selChannels, selStores, allChannels, filteredStoreLabels.length, dateCols, visitSet]);
 
-  // Channel summary table
+  // Channel summary
   const channelSummary = useMemo(() => {
     if (!hasData || dateCols.length === 0) return [];
     const weeks = weeksInRange(dateFrom, dateTo);
-
-    // Per-channel: totalStores (from control file base), visits in period
     const channelMap = new Map<string, { baseStores: number; visits: number }>();
-
-    // Count control file stores per channel (the denominator for completion %)
-    // Only count channels that appear in our grid (respects channel filter)
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
 
     if (control) {
@@ -507,24 +585,19 @@ export default function VisitReportPage() {
       }
     }
 
-    // Count visits from the grid rows (already filtered)
     for (const row of gridRows) {
       const prev = channelMap.get(row.channel) ?? { baseStores: 0, visits: 0 };
       prev.visits += row.visitCount;
-      // If no control file, use visit-data stores as the base
       if (!control) prev.baseStores++;
       channelMap.set(row.channel, prev);
     }
 
-    // If control file exists but a channel has 0 base stores (only in visit data),
-    // fall back to counting distinct stores from gridRows for that channel
     if (control) {
       for (const row of gridRows) {
         const entry = channelMap.get(row.channel);
         if (entry && entry.baseStores === 0) {
-          // Channel not in control file — count distinct grid stores instead
-          const storesInChannel = gridRows.filter(r => r.channel === row.channel);
-          entry.baseStores = new Set(storesInChannel.map(r => r.storeCode)).size;
+          const storesInCh = gridRows.filter(r => r.channel === row.channel);
+          entry.baseStores = new Set(storesInCh.map(r => r.storeCode)).size;
         }
       }
     }
@@ -546,17 +619,178 @@ export default function VisitReportPage() {
 
     return [
       ...rows,
-      {
-        channel: 'Total',
-        totalStores: totalBase,
-        visits: totalVisits,
-        contribution: 100,
-        completion: -1, // sentinel — "—"
-      },
+      { channel: 'Total', totalStores: totalBase, visits: totalVisits, contribution: 100, completion: -1 },
     ];
   }, [hasData, control, gridRows, dateCols, dateFrom, dateTo, selChannels, allChannels]);
 
-  // ─── Clear filters ─────────────────────────────────────────────────────────
+  // ─── Week columns & week grid rows ─────────────────────────────────────────
+
+  const weekCols = useMemo((): WeekCol[] => {
+    if (!dateFrom || !dateTo) return [];
+    const from = new Date(dateFrom + 'T00:00:00');
+    const to = new Date(dateTo + 'T00:00:00');
+    const firstMon = new Date(FIRST_MONDAY);
+
+    // Monday of the week containing `from`
+    const fromDay = from.getDay();
+    const fromMon = new Date(from);
+    fromMon.setDate(fromMon.getDate() - (fromDay === 0 ? 6 : fromDay - 1));
+
+    // Sunday of the week containing `to`
+    const toDay = to.getDay();
+    const toSun = new Date(to);
+    toSun.setDate(toSun.getDate() + (toDay === 0 ? 0 : 7 - toDay));
+
+    const weeks: WeekCol[] = [];
+    const d = new Date(fromMon);
+    while (d <= toSun) {
+      const mon = new Date(d);
+      const sun = new Date(d);
+      sun.setDate(sun.getDate() + 6);
+
+      const wkNum = Math.floor((mon.getTime() - firstMon.getTime()) / (7 * 86400000)) + 1;
+      const monDD = String(mon.getDate()).padStart(2, '0');
+      const monMM = String(mon.getMonth() + 1).padStart(2, '0');
+      const sunDD = String(sun.getDate()).padStart(2, '0');
+      const sunMM = String(sun.getMonth() + 1).padStart(2, '0');
+
+      weeks.push({
+        weekNum: wkNum,
+        monIso: isoDate(mon),
+        sunIso: isoDate(sun),
+        line1: `WK-${wkNum}`,
+        line2: `${monDD}/${monMM} - ${sunDD}/${sunMM}`,
+      });
+      d.setDate(d.getDate() + 7);
+    }
+    return weeks;
+  }, [dateFrom, dateTo]);
+
+  // Map: storeCode → weekNum → visitCount
+  const weekVisitMap = useMemo(() => {
+    const map = new Map<string, Map<number, number>>();
+    for (const v of visitData?.visits ?? []) {
+      const wk = weekNumFor(v.date);
+      if (!map.has(v.storeCode)) map.set(v.storeCode, new Map());
+      const sw = map.get(v.storeCode)!;
+      sw.set(wk, (sw.get(wk) ?? 0) + 1);
+    }
+    return map;
+  }, [visitData]);
+
+  // Week grid rows — same stores as daily grid, with per-week counts
+  const weekGridRows = useMemo(() => {
+    if (!hasData || weekCols.length === 0) return [];
+    const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
+    const stSet = selStores.length > 0 && selStores.length < filteredStoreLabels.length
+      ? new Set(selStores) : null;
+
+    const rows: { storeName: string; storeCode: string; channel: string; weekVisits: Record<number, number>; total: number }[] = [];
+    for (const [code, info] of storeMap) {
+      if (!chSet.has(info.channel)) continue;
+      if (stSet && !stSet.has(`${info.storeName} (${code})`)) continue;
+      const sw = weekVisitMap.get(code);
+      const weekVisits: Record<number, number> = {};
+      let total = 0;
+      for (const wc of weekCols) {
+        const cnt = sw?.get(wc.weekNum) ?? 0;
+        weekVisits[wc.weekNum] = cnt;
+        total += cnt;
+      }
+      rows.push({ storeName: info.storeName, storeCode: code, channel: info.channel, weekVisits, total });
+    }
+    rows.sort((a, b) => a.channel.localeCompare(b.channel) || a.storeName.localeCompare(b.storeName));
+    return rows;
+  }, [hasData, storeMap, selChannels, selStores, allChannels, filteredStoreLabels.length, weekCols, weekVisitMap]);
+
+  // ─── Export to Excel ────────────────────────────────────────────────────────
+
+  const exportToExcel = useCallback(() => {
+    const wb = XLSX.utils.book_new();
+
+    // Sheet 1: Channel Summary
+    if (channelSummary.length > 0) {
+      const csRows = channelSummary.map(r => ({
+        'Channel': r.channel,
+        'Total Stores (Base)': r.totalStores,
+        'Visits in Period': r.visits,
+        'Completion %': r.completion < 0 ? '' : `${r.completion.toFixed(1)}%`,
+        'Contribution %': `${r.contribution.toFixed(1)}%`,
+      }));
+      const ws = XLSX.utils.json_to_sheet(csRows);
+      // Auto-size columns
+      ws['!cols'] = [{ wch: 20 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 14 }];
+      XLSX.utils.book_append_sheet(wb, ws, 'Channel Summary');
+    }
+
+    // Sheet 2: Daily Visit Grid
+    if (gridRows.length > 0 && dateCols.length > 0) {
+      const headers = ['#', 'Channel', 'Store Name', 'Store Code', ...dateCols.map(d => fmtDate(d))];
+      const data = gridRows.map((row, idx) => {
+        const obj: Record<string, string | number> = {
+          '#': idx + 1,
+          'Channel': row.channel,
+          'Store Name': row.storeName,
+          'Store Code': row.storeCode,
+        };
+        for (const d of dateCols) {
+          obj[fmtDate(d)] = row.visits[d] ? '✓' : '';
+        }
+        return obj;
+      });
+      const ws = XLSX.utils.json_to_sheet(data, { header: headers });
+      ws['!cols'] = [
+        { wch: 5 }, { wch: 18 }, { wch: 40 }, { wch: 14 },
+        ...dateCols.map(() => ({ wch: 12 })),
+      ];
+      XLSX.utils.book_append_sheet(wb, ws, 'Daily Visit Grid');
+    }
+
+    // Sheet 3: Week Summary
+    if (weekGridRows.length > 0 && weekCols.length > 0) {
+      const wkHeaders = ['#', 'Channel', 'Store Name', 'Store Code', ...weekCols.map(wc => `${wc.line1} ${wc.line2}`)];
+      const data = weekGridRows.map((row, idx) => {
+        const obj: Record<string, string | number> = {
+          '#': idx + 1,
+          'Channel': row.channel,
+          'Store Name': row.storeName,
+          'Store Code': row.storeCode,
+        };
+        for (const wc of weekCols) {
+          const cnt = row.weekVisits[wc.weekNum] ?? 0;
+          obj[`${wc.line1} ${wc.line2}`] = cnt > 0 ? cnt : '';
+        }
+        return obj;
+      });
+      const ws = XLSX.utils.json_to_sheet(data, { header: wkHeaders });
+      ws['!cols'] = [
+        { wch: 5 }, { wch: 18 }, { wch: 40 }, { wch: 14 },
+        ...weekCols.map(() => ({ wch: 18 })),
+      ];
+      XLSX.utils.book_append_sheet(wb, ws, 'Week Summary');
+    }
+
+    // Sheet 4: Exceptions
+    if (exceptions.length > 0) {
+      const exRows = exceptions.map((ex, idx) => ({
+        '#': idx + 1,
+        'Channel': ex.channel,
+        'Site Code': ex.storeCode,
+        'Store Name': ex.storeName,
+        'Visit UUID': ex.visitUuid,
+        'Date': ex.date,
+      }));
+      const ws = XLSX.utils.json_to_sheet(exRows);
+      ws['!cols'] = [{ wch: 5 }, { wch: 18 }, { wch: 14 }, { wch: 40 }, { wch: 38 }, { wch: 12 }];
+      XLSX.utils.book_append_sheet(wb, ws, 'Exceptions');
+    }
+
+    // Generate filename with date range
+    const fname = `Visit Report ${dateFrom} to ${dateTo}.xlsx`;
+    XLSX.writeFile(wb, fname);
+  }, [channelSummary, gridRows, dateCols, weekGridRows, weekCols, exceptions, dateFrom, dateTo]);
+
+  // ─── Clear filters ────────────────────────────────────────────────────────
 
   const clearFilters = () => {
     setSelChannels([]);
@@ -565,7 +799,26 @@ export default function VisitReportPage() {
     setDateTo(currentWeekSun());
   };
 
+  // ─── Row background helper (opaque for frozen cols) ────────────────────────
+
+  const rowBg = (hasVisit: boolean, idx: number): string =>
+    !hasVisit ? '#fef2f2' : idx % 2 === 0 ? '#ffffff' : '#f9fafb';
+
+  const HEADER_BG = '#1B3A6B';
+
   if (!authChecked) return null;
+
+  // ─── Resize handle element ──────────────────────────────────────────────────
+
+  const resizeHandle = (key: keyof ColWidths) => (
+    <div
+      onMouseDown={(e) => startColResize(key, e)}
+      className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-white/30"
+      style={{ zIndex: 31 }}
+    />
+  );
+
+  // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="min-h-screen" style={{ backgroundImage: "url('/stellr-bg.jpg')", backgroundSize: 'cover', backgroundAttachment: 'fixed', backgroundPosition: 'center' }}>
@@ -575,10 +828,7 @@ export default function VisitReportPage() {
           <div className="flex items-center gap-4">
             <Image
               src="/ao-logo.png" alt="A&O" width={72} height={36} className="object-contain"
-              onError={(e) => {
-                const el = e.target as HTMLImageElement;
-                el.style.display = 'none';
-              }}
+              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
             />
             <div>
               <h1 className="text-base font-bold leading-tight text-[#1B3A6B]">A&O Interactive Services</h1>
@@ -594,10 +844,7 @@ export default function VisitReportPage() {
               <p className="text-[#1B3A6B] text-xs font-semibold">{session?.name}</p>
               <p className="text-gray-400 text-xs">{session?.email}</p>
             </div>
-            <button
-              onClick={() => router.push('/')}
-              className="text-gray-400 hover:text-[#1B3A6B] text-xs flex items-center gap-1 transition-colors"
-            >
+            <button onClick={() => router.push('/')} className="text-gray-400 hover:text-[#1B3A6B] text-xs flex items-center gap-1 transition-colors">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
               </svg>
@@ -642,9 +889,7 @@ export default function VisitReportPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
                 {/* Control File Card */}
                 <div
-                  className={`bg-white rounded-xl border shadow-sm p-5 transition-colors ${
-                    dragOver === 'control' ? 'border-[#1B3A6B] bg-blue-50/30' : 'border-gray-200'
-                  }`}
+                  className={`bg-white rounded-xl border shadow-sm p-5 transition-colors ${dragOver === 'control' ? 'border-[#1B3A6B] bg-blue-50/30' : 'border-gray-200'}`}
                   onDragOver={e => { e.preventDefault(); setDragOver('control'); }}
                   onDragLeave={() => setDragOver(null)}
                   onDrop={handleDrop('control')}
@@ -652,15 +897,11 @@ export default function VisitReportPage() {
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-bold text-[#1B3A6B]">Site Control File (Store Base)</h3>
                     {control && (
-                      <button
-                        onClick={() => handleReset('control')}
-                        className="text-xs text-red-500 hover:text-red-700 transition-colors"
-                      >
+                      <button onClick={() => handleReset('control')} className="text-xs text-red-500 hover:text-red-700 transition-colors">
                         Delete
                       </button>
                     )}
                   </div>
-
                   {control ? (
                     <div className="text-xs text-gray-500 space-y-1 mb-3">
                       <p><span className="font-medium text-gray-700">{control.stores.length}</span> stores across <span className="font-medium text-gray-700">{unique(control.stores.map(s => s.channel)).length}</span> channels</p>
@@ -669,7 +910,6 @@ export default function VisitReportPage() {
                   ) : (
                     <p className="text-xs text-gray-400 mb-3">No control file uploaded — completion % will use visit data stores as base</p>
                   )}
-
                   <label className="flex items-center justify-center gap-2 px-4 py-2.5 bg-[#1B3A6B] text-white rounded-lg text-xs font-semibold cursor-pointer hover:bg-[#152f5a] transition-colors">
                     {uploading === 'control' ? (
                       <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -679,23 +919,11 @@ export default function VisitReportPage() {
                       </svg>
                     )}
                     {control ? 'Replace Control File' : 'Upload Control File'}
-                    <input
-                      type="file"
-                      accept=".xlsx,.xls"
-                      onChange={handleFileInput('control')}
-                      className="hidden"
-                      disabled={uploading !== null}
-                    />
+                    <input type="file" accept=".xlsx,.xls" onChange={handleFileInput('control')} className="hidden" disabled={uploading !== null} />
                   </label>
                   <div className="flex items-center justify-center mt-2 gap-1">
-                    <p className="text-[10px] text-gray-400">
-                      Excel with columns: Channel, Store Name, Store Code
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => downloadTemplate('control')}
-                      className="text-[10px] text-[#1B3A6B] hover:underline font-medium"
-                    >
+                    <p className="text-[10px] text-gray-400">Excel with columns: Channel, Store Name, Store Code</p>
+                    <button type="button" onClick={() => downloadTemplate('control')} className="text-[10px] text-[#1B3A6B] hover:underline font-medium">
                       Download Template
                     </button>
                   </div>
@@ -703,9 +931,7 @@ export default function VisitReportPage() {
 
                 {/* Visit Data Card */}
                 <div
-                  className={`bg-white rounded-xl border shadow-sm p-5 transition-colors ${
-                    dragOver === 'data' ? 'border-[#1B3A6B] bg-blue-50/30' : 'border-gray-200'
-                  }`}
+                  className={`bg-white rounded-xl border shadow-sm p-5 transition-colors ${dragOver === 'data' ? 'border-[#1B3A6B] bg-blue-50/30' : 'border-gray-200'}`}
                   onDragOver={e => { e.preventDefault(); setDragOver('data'); }}
                   onDragLeave={() => setDragOver(null)}
                   onDrop={handleDrop('data')}
@@ -713,15 +939,11 @@ export default function VisitReportPage() {
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-bold text-[#1B3A6B]">Visit Data</h3>
                     {visitData && (
-                      <button
-                        onClick={() => handleReset('data')}
-                        className="text-xs text-red-500 hover:text-red-700 transition-colors"
-                      >
+                      <button onClick={() => handleReset('data')} className="text-xs text-red-500 hover:text-red-700 transition-colors">
                         Reset All
                       </button>
                     )}
                   </div>
-
                   {visitData ? (
                     <div className="text-xs text-gray-500 space-y-1 mb-3">
                       <p><span className="font-medium text-gray-700">{visitData.visits.length}</span> total visits</p>
@@ -741,7 +963,6 @@ export default function VisitReportPage() {
                   ) : (
                     <p className="text-xs text-gray-400 mb-3">No visit data uploaded yet</p>
                   )}
-
                   <label className="flex items-center justify-center gap-2 px-4 py-2.5 bg-[#1B3A6B] text-white rounded-lg text-xs font-semibold cursor-pointer hover:bg-[#152f5a] transition-colors">
                     {uploading === 'data' ? (
                       <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -751,23 +972,11 @@ export default function VisitReportPage() {
                       </svg>
                     )}
                     Upload Visit Data
-                    <input
-                      type="file"
-                      accept=".xlsx,.xls"
-                      onChange={handleFileInput('data')}
-                      className="hidden"
-                      disabled={uploading !== null}
-                    />
+                    <input type="file" accept=".xlsx,.xls" onChange={handleFileInput('data')} className="hidden" disabled={uploading !== null} />
                   </label>
                   <div className="flex items-center justify-center mt-2 gap-1">
-                    <p className="text-[10px] text-gray-400">
-                      Perigee visits export — Channel, Store Code, Store Full Name, Check In Date
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => downloadTemplate('data')}
-                      className="text-[10px] text-[#1B3A6B] hover:underline font-medium"
-                    >
+                    <p className="text-[10px] text-gray-400">Perigee visits export — Channel, Store Code, Store Full Name, Check In Date</p>
+                    <button type="button" onClick={() => downloadTemplate('data')} className="text-[10px] text-[#1B3A6B] hover:underline font-medium">
                       Download Template
                     </button>
                   </div>
@@ -775,7 +984,7 @@ export default function VisitReportPage() {
               </div>
             )}
 
-            {/* Empty state — no data at all */}
+            {/* Empty state */}
             {!hasData && (
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-16 text-center">
                 <p className="text-xl font-semibold text-gray-700 mb-2">No data uploaded yet</p>
@@ -787,56 +996,41 @@ export default function VisitReportPage() {
               </div>
             )}
 
-            {/* Report — show when we have any data */}
+            {/* ══════════════════ Report Section ══════════════════ */}
             {hasData && (
               <>
                 {/* Filters */}
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-5">
                   <div className="flex flex-wrap items-end gap-4">
-                    <MultiSelect
-                      label="Channel"
-                      items={allChannels}
-                      selected={selChannels}
-                      onChange={setSelChannels}
-                    />
+                    <MultiSelect label="Channel" items={allChannels} selected={selChannels} onChange={setSelChannels} />
                     {filteredStoreLabels.length > 0 && (
-                      <MultiSelect
-                        label="Store"
-                        items={filteredStoreLabels}
-                        selected={selStores}
-                        onChange={setSelStores}
-                      />
+                      <MultiSelect label="Store" items={filteredStoreLabels} selected={selStores} onChange={setSelStores} />
                     )}
                     <div>
                       <label className="block text-xs font-semibold text-gray-600 mb-1">Date From</label>
-                      <input
-                        type="date"
-                        value={dateFrom}
-                        onChange={e => setDateFrom(e.target.value)}
-                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#1B3A6B]"
-                      />
+                      <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#1B3A6B]" />
                     </div>
                     <div>
                       <label className="block text-xs font-semibold text-gray-600 mb-1">Date To</label>
-                      <input
-                        type="date"
-                        value={dateTo}
-                        onChange={e => setDateTo(e.target.value)}
-                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#1B3A6B]"
-                      />
+                      <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#1B3A6B]" />
                     </div>
-                    <div className="ml-auto">
-                      <button
-                        onClick={clearFilters}
-                        className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-                      >
+                    <div className="ml-auto flex items-center gap-2">
+                      <button onClick={clearFilters} className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
                         Clear Filters
+                      </button>
+                      <button onClick={exportToExcel} className="px-4 py-2 text-sm text-white bg-[#1B3A6B] rounded-lg hover:bg-[#152f5a] transition-colors flex items-center gap-1.5 font-medium">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        Export to Excel
                       </button>
                     </div>
                   </div>
                 </div>
 
-                {/* Channel Summary Table */}
+                {/* ──────── Channel Summary Table ──────── */}
                 {channelSummary.length > 0 && (
                   <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-5">
                     <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
@@ -853,31 +1047,29 @@ export default function VisitReportPage() {
                       )}
                     </div>
                     <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
+                      <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
-                          <tr className="bg-[#1B3A6B] text-white">
-                            <th className="px-4 py-2.5 text-left text-xs font-semibold">Channel</th>
-                            <th className="px-4 py-2.5 text-right text-xs font-semibold">Total Stores (Base)</th>
-                            <th className="px-4 py-2.5 text-right text-xs font-semibold">Visits in Period</th>
-                            <th className="px-4 py-2.5 text-right text-xs font-semibold">Contribution %</th>
-                            <th className="px-4 py-2.5 text-right text-xs font-semibold">Completion %</th>
+                          <tr style={{ backgroundColor: HEADER_BG, color: '#fff' }}>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Channel</th>
+                            <th className="px-4 py-2.5 text-right text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Total Stores (Base)</th>
+                            <th className="px-4 py-2.5 text-right text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Visits in Period</th>
+                            <th className="px-4 py-2.5 text-right text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Completion %</th>
+                            <th className="px-4 py-2.5 text-right text-xs font-semibold" style={{ borderBottom: GRID_BORDER }}>Contribution %</th>
                           </tr>
                         </thead>
                         <tbody>
                           {channelSummary.map((row, idx) => {
                             const isTotal = row.channel === 'Total';
+                            const bg = isTotal ? '#f9fafb' : idx % 2 === 0 ? '#ffffff' : '#f9fafb';
                             return (
-                              <tr
-                                key={row.channel}
-                                className={`${isTotal ? 'bg-gray-50 font-bold' : idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'} border-t border-gray-100`}
-                              >
-                                <td className="px-4 py-2 text-gray-800">{row.channel}</td>
-                                <td className="px-4 py-2 text-right text-gray-700">{row.totalStores}</td>
-                                <td className="px-4 py-2 text-right text-gray-700">{row.visits}</td>
-                                <td className="px-4 py-2 text-right text-gray-700">{row.contribution.toFixed(1)}%</td>
-                                <td className="px-4 py-2 text-right text-gray-700">
+                              <tr key={row.channel} style={{ backgroundColor: bg, fontWeight: isTotal ? 700 : 400 }}>
+                                <td className="px-4 py-2 text-gray-800" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{row.channel}</td>
+                                <td className="px-4 py-2 text-right text-gray-700" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{row.totalStores}</td>
+                                <td className="px-4 py-2 text-right text-gray-700" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{row.visits}</td>
+                                <td className="px-4 py-2 text-right font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, ...completionStyle(row.completion) }}>
                                   {row.completion < 0 ? '—' : `${row.completion.toFixed(1)}%`}
                                 </td>
+                                <td className="px-4 py-2 text-right text-gray-700" style={{ borderBottom: GRID_BORDER }}>{row.contribution.toFixed(1)}%</td>
                               </tr>
                             );
                           })}
@@ -887,8 +1079,8 @@ export default function VisitReportPage() {
                   </div>
                 )}
 
-                {/* Store Visit Grid */}
-                <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                {/* ──────── Store Visit Grid (Daily) ──────── */}
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-5">
                   <div className="px-4 py-3 border-b border-gray-100">
                     <p className="text-sm font-semibold text-gray-700">
                       Store Visit Grid
@@ -897,16 +1089,31 @@ export default function VisitReportPage() {
                       </span>
                     </p>
                   </div>
-                  <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto' }}>
-                    <table className="text-sm border-collapse w-full" style={{ minWidth: `${400 + dateCols.length * 70}px` }}>
-                      <thead className="sticky top-0 z-20">
-                        <tr className="bg-[#1B3A6B] text-white">
-                          <th className="px-3 py-2.5 text-left text-xs font-semibold w-10">#</th>
-                          <th className="px-3 py-2.5 text-left text-xs font-semibold w-28">Channel</th>
-                          <th className="px-3 py-2.5 text-left text-xs font-semibold w-48">Store Name</th>
-                          <th className="px-3 py-2.5 text-left text-xs font-semibold w-24">Store Code</th>
+                  <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto', position: 'relative' }}>
+                    <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: `${cw.num + cw.ch + cw.name + cw.code + dateCols.length * 72}px` }}>
+                      <thead className="sticky top-0" style={{ zIndex: 20 }}>
+                        <tr>
+                          {/* Frozen header cells */}
+                          <th className="px-2 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(0, cw, HEADER_BG, true)}>
+                            #
+                            {resizeHandle('num')}
+                          </th>
+                          <th className="px-3 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(1, cw, HEADER_BG, true)}>
+                            Channel
+                            {resizeHandle('ch')}
+                          </th>
+                          <th className="px-3 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(2, cw, HEADER_BG, true)}>
+                            Store Name
+                            {resizeHandle('name')}
+                          </th>
+                          <th className="px-3 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(3, cw, HEADER_BG, true)}>
+                            Store Code
+                            {resizeHandle('code')}
+                          </th>
+                          {/* Scrollable date headers */}
                           {dateCols.map(d => (
-                            <th key={d} className="px-2 py-2.5 text-center text-xs font-semibold whitespace-nowrap">
+                            <th key={d} className="px-2 py-2.5 text-center text-xs font-semibold whitespace-nowrap text-white"
+                              style={{ backgroundColor: HEADER_BG, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: 72 }}>
                               {fmtDate(d)}
                             </th>
                           ))}
@@ -921,22 +1128,18 @@ export default function VisitReportPage() {
                           </tr>
                         ) : (
                           gridRows.map((row, idx) => {
-                            const hasAnyVisit = row.visitCount > 0;
-                            const rowBg = !hasAnyVisit
-                              ? 'bg-red-50/60'
-                              : idx % 2 === 0
-                                ? 'bg-white'
-                                : 'bg-gray-50';
+                            const bg = rowBg(row.visitCount > 0, idx);
                             return (
-                              <tr key={`${row.storeCode}-${idx}`} className={rowBg}>
-                                <td className="px-3 py-2 text-xs text-gray-400">{idx + 1}</td>
-                                <td className="px-3 py-2 text-xs text-gray-600 whitespace-nowrap">{row.channel}</td>
-                                <td className="px-3 py-2 text-gray-800 font-medium">{row.storeName}</td>
-                                <td className="px-3 py-2 text-xs text-gray-600">{row.storeCode}</td>
+                              <tr key={`${row.storeCode}-${idx}`}>
+                                <td className="px-2 py-1.5 text-xs text-gray-400" style={frozenCell(0, cw, bg, false)}>{idx + 1}</td>
+                                <td className="px-3 py-1.5 text-xs text-gray-600 whitespace-nowrap overflow-hidden text-ellipsis" style={frozenCell(1, cw, bg, false)}>{row.channel}</td>
+                                <td className="px-3 py-1.5 text-gray-800 font-medium overflow-hidden text-ellipsis" style={frozenCell(2, cw, bg, false)}>{row.storeName}</td>
+                                <td className="px-3 py-1.5 text-xs text-gray-600" style={frozenCell(3, cw, bg, false)}>{row.storeCode}</td>
                                 {dateCols.map(d => (
-                                  <td key={d} className="px-2 py-2 text-center">
+                                  <td key={d} className="px-2 py-1.5 text-center"
+                                    style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: 72 }}>
                                     {row.visits[d] ? (
-                                      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-green-100 text-green-700 text-xs font-bold">
+                                      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-100 text-green-700 text-[10px] font-bold">
                                         ✓
                                       </span>
                                     ) : null}
@@ -950,6 +1153,116 @@ export default function VisitReportPage() {
                     </table>
                   </div>
                 </div>
+
+                {/* ──────── Week Summary Grid ──────── */}
+                {weekCols.length > 0 && weekGridRows.length > 0 && (
+                  <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                    <div className="px-4 py-3 border-b border-gray-100">
+                      <p className="text-sm font-semibold text-gray-700">
+                        Week Summary
+                        <span className="ml-2 text-xs font-normal text-gray-400">
+                          {weekGridRows.length} stores, {weekCols.length} weeks
+                        </span>
+                      </p>
+                    </div>
+                    <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto', position: 'relative' }}>
+                      <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: `${cw.num + cw.ch + cw.name + cw.code + weekCols.length * 90}px` }}>
+                        <thead className="sticky top-0" style={{ zIndex: 20 }}>
+                          <tr>
+                            <th className="px-2 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(0, cw, HEADER_BG, true)}>
+                              #
+                            </th>
+                            <th className="px-3 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(1, cw, HEADER_BG, true)}>
+                              Channel
+                            </th>
+                            <th className="px-3 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(2, cw, HEADER_BG, true)}>
+                              Store Name
+                            </th>
+                            <th className="px-3 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(3, cw, HEADER_BG, true)}>
+                              Store Code
+                            </th>
+                            {weekCols.map(wc => (
+                              <th key={wc.weekNum} className="px-2 py-1.5 text-center text-xs font-semibold text-white whitespace-nowrap"
+                                style={{ backgroundColor: HEADER_BG, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: 90 }}>
+                                <div className="leading-tight">{wc.line1}</div>
+                                <div className="text-[10px] font-normal opacity-80">{wc.line2}</div>
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {weekGridRows.map((row, idx) => {
+                            const bg = rowBg(row.total > 0, idx);
+                            return (
+                              <tr key={`wk-${row.storeCode}-${idx}`}>
+                                <td className="px-2 py-1.5 text-xs text-gray-400" style={frozenCell(0, cw, bg, false)}>{idx + 1}</td>
+                                <td className="px-3 py-1.5 text-xs text-gray-600 whitespace-nowrap overflow-hidden text-ellipsis" style={frozenCell(1, cw, bg, false)}>{row.channel}</td>
+                                <td className="px-3 py-1.5 text-gray-800 font-medium overflow-hidden text-ellipsis" style={frozenCell(2, cw, bg, false)}>{row.storeName}</td>
+                                <td className="px-3 py-1.5 text-xs text-gray-600" style={frozenCell(3, cw, bg, false)}>{row.storeCode}</td>
+                                {weekCols.map(wc => {
+                                  const cnt = row.weekVisits[wc.weekNum] ?? 0;
+                                  return (
+                                    <td key={wc.weekNum} className="px-2 py-1.5 text-center text-xs"
+                                      style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: 90 }}>
+                                      {cnt > 0 ? (
+                                        <span className="inline-flex items-center justify-center min-w-[20px] h-5 rounded-full bg-green-100 text-green-700 text-[10px] font-bold px-1.5">
+                                          {cnt}
+                                        </span>
+                                      ) : null}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* ──────── Exceptions Grid ──────── */}
+                {exceptions.length > 0 && (
+                  <div className="bg-white rounded-xl border border-amber-300 shadow-sm overflow-hidden mt-5">
+                    <div className="px-4 py-3 border-b border-amber-200 bg-amber-50">
+                      <p className="text-sm font-semibold text-amber-800">
+                        Exceptions
+                        <span className="ml-2 text-xs font-normal text-amber-600">
+                          {exceptions.length} visits from stores not in the Site Control File
+                        </span>
+                      </p>
+                    </div>
+                    <div style={{ overflowX: 'auto', maxHeight: '50vh', overflowY: 'auto' }}>
+                      <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+                        <thead className="sticky top-0" style={{ zIndex: 20 }}>
+                          <tr style={{ backgroundColor: '#92400e', color: '#fff' }}>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>#</th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Channel</th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Site Code</th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Store Name</th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Visit UUID</th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderBottom: GRID_BORDER }}>Date</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {exceptions.map((ex, idx) => {
+                            const bg = idx % 2 === 0 ? '#ffffff' : '#fffbeb';
+                            return (
+                              <tr key={`ex-${idx}`}>
+                                <td className="px-4 py-1.5 text-xs text-gray-400" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{idx + 1}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{ex.channel}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-700 font-mono" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{ex.storeCode}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{ex.storeName}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-500 font-mono" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{ex.visitUuid}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderBottom: GRID_BORDER }}>{ex.date}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </>
