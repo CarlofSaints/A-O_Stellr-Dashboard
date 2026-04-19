@@ -66,18 +66,28 @@ async function fetchJson<T>(path: string): Promise<T | null> {
   }
 }
 
-/** Deduplicate rows by Visit UUID — keeps first occurrence */
+/** Deduplicate rows by Visit UUID + formType — keeps first occurrence.
+ *  Count/Stand rows from the same visit share a UUID, so formType is needed
+ *  to prevent cross-form-type dedup. Legacy data without formType defaults to 'merch'. */
 function dedupeRows(existing: LoadedFile[], incoming: LoadedFile[]): LoadedFile[] {
   const seen = new Set(
-    existing.flatMap(f => f.rows.map(r => String(r['Visit UUID'] ?? '').trim())).filter(Boolean)
+    existing.flatMap(f => {
+      const ft = f.formType ?? 'merch';
+      return f.rows.map(r => {
+        const uuid = String(r['Visit UUID'] ?? '').trim();
+        return uuid ? `${uuid}|${ft}` : '';
+      });
+    }).filter(Boolean)
   );
   const result: LoadedFile[] = [];
   for (const file of incoming) {
+    const ft = file.formType ?? 'merch';
     const filtered = file.rows.filter(r => {
       const uuid = String(r['Visit UUID'] ?? '').trim();
       if (!uuid) return true;
-      if (seen.has(uuid)) return false;
-      seen.add(uuid);
+      const key = `${uuid}|${ft}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
       return true;
     });
     if (filtered.length > 0) {

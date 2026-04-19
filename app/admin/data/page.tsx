@@ -2,7 +2,13 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import type { ParseResult, VisitRow, LoadedFile } from '@/lib/types';
+import type { FormType, ParseResult, VisitRow, LoadedFile } from '@/lib/types';
+
+const FORM_TYPE_LABELS: Record<FormType, string> = {
+  'merch': 'Merch Form',
+  'stock-count': 'Stock Count Form',
+  'stand': 'Stand Form',
+};
 
 interface Session {
   id: string;
@@ -29,6 +35,7 @@ function stripExt(filename: string): string {
 
 interface UploadReport {
   fileName: string;
+  formType?: FormType;
   channels: { name: string; rows: number; added: number }[];
   error?: string;
 }
@@ -89,6 +96,7 @@ export default function AdminDataPage() {
         const json = await res.json();
         if (!res.ok) throw new Error(json.error ?? 'Parse failed');
         const parsed = json as ParseResult;
+        report.formType = parsed.formType;
 
         // 2. Split rows by their actual Channel value (FIX for the multi-channel bug)
         const rowsByChannel = new Map<string, VisitRow[]>();
@@ -98,7 +106,7 @@ export default function AdminDataPage() {
           rowsByChannel.get(ch)!.push(row);
         }
 
-        // 3. POST one channel at a time (server merges + dedupes by Visit UUID)
+        // 3. POST one channel at a time (server merges + dedupes by Visit UUID + formType)
         for (const [channel, rows] of rowsByChannel) {
           const loadedFile: LoadedFile = {
             name: stripExt(file.name),
@@ -111,6 +119,7 @@ export default function AdminDataPage() {
             uploadedAt: new Date().toISOString(),
             uploadedBy: session?.name ?? 'Unknown',
             channel,
+            formType: parsed.formType,
           };
 
           try {
@@ -238,7 +247,14 @@ export default function AdminDataPage() {
             <div className="divide-y divide-gray-100">
               {reports.map((r, i) => (
                 <div key={i} className="px-4 py-3">
-                  <p className="text-sm font-semibold text-gray-800">{r.fileName}</p>
+                  <p className="text-sm font-semibold text-gray-800">
+                    {r.fileName}
+                    {r.formType && (
+                      <span className="ml-2 text-xs font-normal text-gray-500">
+                        ({FORM_TYPE_LABELS[r.formType]})
+                      </span>
+                    )}
+                  </p>
                   {r.error && <p className="text-xs text-red-600 mt-1">{r.error}</p>}
                   {r.channels.length > 0 && (
                     <ul className="mt-2 space-y-1">

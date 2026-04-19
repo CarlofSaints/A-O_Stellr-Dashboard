@@ -62,7 +62,7 @@ export async function fetchAndCache(dateFrom: string, dateTo: string): Promise<P
   console.log(`[sql-cache] visit query: ${Date.now() - t0}ms, ${visitRows.length} rows`);
 
   if (visitRows.length === 0) {
-    const empty: ParseResult = { headers: BASE_HEADERS, rows: [], imageColumns: [], imageFolderName };
+    const empty: ParseResult = { headers: BASE_HEADERS, rows: [], imageColumns: [], imageFolderName, formType: 'merch' };
     cache.set(cacheKey, { data: empty, expiresAt: Date.now() + CACHE_TTL_MS });
     return empty;
   }
@@ -129,7 +129,7 @@ export async function fetchAndCache(dateFrom: string, dateTo: string): Promise<P
     return out;
   });
 
-  const result: ParseResult = { headers, rows, imageColumns, imageFolderName };
+  const result: ParseResult = { headers, rows, imageColumns, imageFolderName, formType: 'merch' };
   cache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
   console.log(`[sql-cache] total: ${Date.now() - t0}ms — cached 15 min`);
   return result;

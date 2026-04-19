@@ -3,7 +3,13 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import type { VisitRow, LoadedFile } from '@/lib/types';
+import type { FormType, VisitRow, LoadedFile } from '@/lib/types';
+
+const FORM_TYPE_LABELS: Record<FormType, string> = {
+  'merch': 'Merch Form',
+  'stock-count': 'Stock Count Form',
+  'stand': 'Stand Form',
+};
 
 interface Session {
   id: string;
@@ -46,6 +52,7 @@ const MIN_COL_W = 48;
 const HIDDEN_COLS = new Set([
   'id', 'email', 'customer', 'sync date', 'sync time', 'tag',
   'visit uuid', 'time', 'first name', 'last name', 'store code', 'rep name',
+  'stock on hand',
 ]);
 
 const SECTION_PREFIXES = ['staff', 'training stuff', 'media', 'stock', 'line management'];
@@ -382,6 +389,7 @@ export default function Dashboard() {
   }, []);
 
   const [selChannels, setSelChannels] = useState<string[]>([]);
+  const [selFormType, setSelFormType] = useState<FormType>('merch');
   const [selProvinces, setSelProvinces] = useState<string[]>([]);
   const [selReps, setSelReps] = useState<string[]>([]);
   const [selStores, setSelStores] = useState<string[]>([]);
@@ -408,16 +416,35 @@ export default function Dashboard() {
     router.replace('/login');
   };
 
-  // Merged dataset
+  // Form types present in loaded data
+  const allFormTypes = useMemo<FormType[]>(() => {
+    const types = new Set(loadedFiles.map(f => f.formType ?? 'merch'));
+    return (['merch', 'stock-count', 'stand'] as FormType[]).filter(t => types.has(t));
+  }, [loadedFiles]);
+
+  // Auto-set selFormType to first available when data changes
+  useEffect(() => {
+    if (allFormTypes.length > 0 && !allFormTypes.includes(selFormType)) {
+      setSelFormType(allFormTypes[0]);
+    }
+  }, [allFormTypes, selFormType]);
+
+  // Files filtered to selected form type only
+  const formFilteredFiles = useMemo(
+    () => loadedFiles.filter(f => (f.formType ?? 'merch') === selFormType),
+    [loadedFiles, selFormType]
+  );
+
+  // Merged dataset (from form-filtered files only → clean column list per form type)
   const mergedData = useMemo(() => {
-    if (loadedFiles.length === 0) return null;
-    const headers = unique(loadedFiles.flatMap(f => f.headers));
-    const imageColumns = unique(loadedFiles.flatMap(f => f.imageColumns));
-    const rows: VisitRow[] = loadedFiles.flatMap(f =>
-      f.rows.map(r => ({ ...r, _source: f.name } as VisitRow))
+    if (formFilteredFiles.length === 0) return null;
+    const headers = unique(formFilteredFiles.flatMap(f => f.headers));
+    const imageColumns = unique(formFilteredFiles.flatMap(f => f.imageColumns));
+    const rows: VisitRow[] = formFilteredFiles.flatMap(f =>
+      f.rows.map(r => ({ ...r, _source: f.name, _formType: f.formType ?? 'merch' } as VisitRow))
     );
     return { headers, rows, imageColumns };
-  }, [loadedFiles]);
+  }, [formFilteredFiles]);
 
   const channelCol = useMemo(
     () => mergedData?.headers.find(h => h.toLowerCase() === 'channel') ?? null,
@@ -626,7 +653,8 @@ export default function Dashboard() {
 
 
   const clearFilters = () => {
-    setSelChannels([]);          setSelProvinces(allProvinces);
+    setSelChannels([]);          setSelFormType(allFormTypes[0] ?? 'merch');
+    setSelProvinces(allProvinces);
     setSelReps(allReps);         setSelStores(availableStores);
     setDateFrom('');             setDateTo('');
   };
@@ -753,6 +781,20 @@ export default function Dashboard() {
                   disabledItems={incompatibleChannels}
                   disabledHint="From a different upload — deselect the current channel(s) first"
                 />
+                {allFormTypes.length > 1 && (
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Form Name</label>
+                    <select
+                      value={selFormType}
+                      onChange={e => setSelFormType(e.target.value as FormType)}
+                      className="px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-700 hover:border-[#1B3A6B] focus:outline-none focus:border-[#1B3A6B] transition-colors min-w-[160px]"
+                    >
+                      {allFormTypes.map(ft => (
+                        <option key={ft} value={ft}>{FORM_TYPE_LABELS[ft]}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <MultiSelect label="Province" items={allProvinces}   selected={selProvinces} onChange={setSelProvinces} />
                 {storeCol && availableStores.length > 0 && (
                   <MultiSelect label="Store" items={availableStores} selected={selStores}   onChange={setSelStores} />

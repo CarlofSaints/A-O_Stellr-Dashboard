@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
-import type { ParseResult, VisitRow } from '@/lib/types';
+import type { FormType, ParseResult, VisitRow } from '@/lib/types';
 
 // Perigee section-header artefacts — not real data columns
-const SECTION_HEADERS = new Set(['Media', 'Stock', 'Training Stuff', 'Staff', 'Line Management']);
+const SECTION_HEADERS = new Set(['Media', 'Stock', 'Stock On Hand', 'Training Stuff', 'Staff', 'Line Management']);
+
+/** Auto-detect form type from raw Excel headers (before filtering) */
+function detectFormType(headers: string[]): FormType {
+  const set = new Set(headers.map(h => h.toLowerCase().trim()));
+  if (set.has('stock on hand')) return 'stock-count';
+  if (set.has('display stands identification')) return 'stand';
+  return 'merch';
+}
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -44,6 +52,7 @@ export async function POST(req: NextRequest) {
     }
 
     const allHeaders = (raw[0] as (string | null)[]).map(h => String(h ?? '').trim());
+    const formType = detectFormType(allHeaders);
     const dataRows = raw.slice(1) as (string | number | null | Date)[][];
 
     // Detect image columns — any column whose values start with the Perigee portal URL
@@ -92,6 +101,7 @@ export async function POST(req: NextRequest) {
       rows,
       imageColumns: [...imageCols],
       imageFolderName,
+      formType,
     };
 
     return NextResponse.json(result);
