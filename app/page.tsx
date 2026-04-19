@@ -495,34 +495,6 @@ export default function Dashboard() {
     [indexChannels]
   );
 
-  // Map of channel name → set of source filenames (from the SP index)
-  const channelSources = useMemo(() => {
-    const map = new Map<string, Set<string>>();
-    for (const c of indexChannels) {
-      map.set(c.name, new Set(c.sources ?? []));
-    }
-    return map;
-  }, [indexChannels]);
-
-  // Channels NOT compatible with the current selection (grayed out in the selector).
-  // Compatible = shares at least one source filename with the union of sources of
-  // currently-selected channels. Empty selection → everything enabled.
-  const incompatibleChannels = useMemo(() => {
-    const disabled = new Set<string>();
-    if (selChannels.length === 0) return disabled;
-    const selectedSources = new Set<string>();
-    for (const sel of selChannels) {
-      const ss = channelSources.get(sel);
-      if (ss) for (const s of ss) selectedSources.add(s);
-    }
-    for (const c of allChannels) {
-      if (selChannels.includes(c)) continue; // never disable already-selected
-      const cs = channelSources.get(c);
-      const compatible = cs && [...cs].some(s => selectedSources.has(s));
-      if (!compatible) disabled.add(c);
-    }
-    return disabled;
-  }, [allChannels, selChannels, channelSources]);
   const allProvinces = useMemo(
     () => unique((mergedData?.rows ?? []).map(r => String(r['Province'] ?? '').trim()).filter(Boolean)),
     [mergedData]
@@ -661,6 +633,33 @@ export default function Dashboard() {
 
   const totalCols = 1 + (channelCol ? 1 : 0) + (storeCol ? 1 : 0) + 1 + tableHeaders.length;
 
+  const exportToExcel = useCallback(async () => {
+    if (!mergedData || filteredRows.length === 0) return;
+    const XLSX = (await import('xlsx')).default ?? await import('xlsx');
+    // Build visible column list in table order
+    const cols: { key: string; label: string }[] = [];
+    if (channelCol) cols.push({ key: channelCol, label: channelCol });
+    if (storeCol) cols.push({ key: storeCol, label: storeCol });
+    cols.push({ key: '__rep', label: 'Rep' });
+    for (const h of tableHeaders) {
+      if (!mergedData.imageColumns.includes(h)) cols.push({ key: h, label: h });
+    }
+    const data = filteredRows.map(row => {
+      const out: Record<string, string | number | null> = {};
+      for (const c of cols) {
+        if (c.key === '__rep') out[c.label] = getRepName(row);
+        else out[c.label] = row[c.key] ?? null;
+      }
+      return out;
+    });
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Export');
+    const formLabel = FORM_TYPE_LABELS[selFormType].replace(/ /g, '_');
+    const channels = selChannels.join('-') || 'All';
+    XLSX.writeFile(wb, `A&O_${channels}_${formLabel}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }, [mergedData, filteredRows, channelCol, storeCol, tableHeaders, selFormType, selChannels]);
+
   if (!authChecked) return null;
 
   return (
@@ -778,8 +777,6 @@ export default function Dashboard() {
                   items={allChannels}
                   selected={selChannels}
                   onChange={setSelChannels}
-                  disabledItems={incompatibleChannels}
-                  disabledHint="From a different upload — deselect the current channel(s) first"
                 />
                 {allFormTypes.length > 1 && (
                   <div>
@@ -865,6 +862,17 @@ export default function Dashboard() {
                 </div>
                 <div className="flex items-center gap-3">
                   <p className="text-xs text-gray-400">Drag column edges to resize</p>
+                  <button
+                    type="button"
+                    onClick={exportToExcel}
+                    className="text-gray-400 hover:text-[#1B3A6B] transition-colors flex items-center gap-1 text-xs"
+                    title="Export to Excel"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Export
+                  </button>
                   <button
                     type="button"
                     onClick={() => setIsFullscreen(v => !v)}
