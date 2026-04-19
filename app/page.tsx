@@ -696,6 +696,47 @@ export default function Dashboard() {
     XLSX.writeFile(wb, `A&O_${channels}_${formLabel}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   }, [mergedData, filteredRows, channelCol, storeCol, tableHeaders, selFormType, selChannels]);
 
+  // ─── Stock Count summaries (only computed when form type is stock-count) ────
+
+  // Identify product columns: any tableHeader whose values are numeric
+  const productCols = useMemo(() => {
+    if (selFormType !== 'stock-count' || filteredRows.length === 0) return [];
+    return tableHeaders.filter(h =>
+      filteredRows.some(r => { const v = r[h]; return v !== null && v !== '' && !isNaN(Number(v)); })
+    );
+  }, [selFormType, filteredRows, tableHeaders]);
+
+  // Summary by product: total SOH per product column
+  const productSummary = useMemo(() => {
+    if (productCols.length === 0) return [];
+    return productCols.map(h => {
+      let total = 0;
+      for (const row of filteredRows) {
+        const n = Number(row[h]);
+        if (!isNaN(n)) total += n;
+      }
+      return { product: h, total };
+    }).sort((a, b) => b.total - a.total);
+  }, [productCols, filteredRows]);
+
+  // Summary by store: total SOH across all product columns per store
+  const storeSummary = useMemo(() => {
+    if (productCols.length === 0 || !storeCol) return [];
+    const map = new Map<string, number>();
+    for (const row of filteredRows) {
+      const store = String(row[storeCol] ?? '').trim() || 'Unknown';
+      let rowTotal = 0;
+      for (const h of productCols) {
+        const n = Number(row[h]);
+        if (!isNaN(n)) rowTotal += n;
+      }
+      map.set(store, (map.get(store) ?? 0) + rowTotal);
+    }
+    return [...map.entries()]
+      .map(([store, total]) => ({ store, total }))
+      .sort((a, b) => b.total - a.total);
+  }, [productCols, filteredRows, storeCol]);
+
   if (!authChecked) return null;
 
   return (
@@ -1084,6 +1125,81 @@ export default function Dashboard() {
                 <div style={{ width: `${totalTableW}px`, height: '1px' }} />
               </div>
             </div>
+            )}
+
+            {/* Stock Count summary tables */}
+            {selFormType === 'stock-count' && productSummary.length > 0 && !channelLoading && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-5">
+                {/* Summary by Product */}
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="px-4 py-3 border-b border-gray-100">
+                    <p className="text-sm font-semibold text-gray-700">
+                      SOH by Product
+                      <span className="ml-2 text-xs font-normal text-gray-400">{productSummary.length} products</span>
+                    </p>
+                  </div>
+                  <div className="max-h-[50vh] overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 z-10">
+                        <tr className="bg-[#1B3A6B] text-white">
+                          <th className="px-4 py-2.5 text-left text-xs font-semibold">Product</th>
+                          <th className="px-4 py-2.5 text-right text-xs font-semibold w-28">Total SOH</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {productSummary.map((p, i) => (
+                          <tr key={p.product} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                            <td className="px-4 py-2 text-gray-700 break-words">{p.product}</td>
+                            <td className="px-4 py-2 text-right font-semibold text-[#1B3A6B] tabular-nums">{p.total.toLocaleString()}</td>
+                          </tr>
+                        ))}
+                        <tr className="bg-[#1B3A6B]/5 border-t border-gray-200 font-bold">
+                          <td className="px-4 py-2.5 text-gray-800">Grand Total</td>
+                          <td className="px-4 py-2.5 text-right text-[#1B3A6B] tabular-nums">
+                            {productSummary.reduce((s, p) => s + p.total, 0).toLocaleString()}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Summary by Store */}
+                {storeSummary.length > 0 && (
+                  <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                    <div className="px-4 py-3 border-b border-gray-100">
+                      <p className="text-sm font-semibold text-gray-700">
+                        SOH by Store
+                        <span className="ml-2 text-xs font-normal text-gray-400">{storeSummary.length} stores</span>
+                      </p>
+                    </div>
+                    <div className="max-h-[50vh] overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0 z-10">
+                          <tr className="bg-[#1B3A6B] text-white">
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold">Store</th>
+                            <th className="px-4 py-2.5 text-right text-xs font-semibold w-28">Total SOH</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {storeSummary.map((s, i) => (
+                            <tr key={s.store} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                              <td className="px-4 py-2 text-gray-700">{s.store}</td>
+                              <td className="px-4 py-2 text-right font-semibold text-[#1B3A6B] tabular-nums">{s.total.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                          <tr className="bg-[#1B3A6B]/5 border-t border-gray-200 font-bold">
+                            <td className="px-4 py-2.5 text-gray-800">Grand Total</td>
+                            <td className="px-4 py-2.5 text-right text-[#1B3A6B] tabular-nums">
+                              {storeSummary.reduce((s, p) => s + p.total, 0).toLocaleString()}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
           </>
         )}
