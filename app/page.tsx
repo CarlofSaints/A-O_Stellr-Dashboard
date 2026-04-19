@@ -426,11 +426,11 @@ export default function Dashboard() {
     router.replace('/login');
   };
 
-  // Form types present in loaded data
+  // Form types available across all channels (from index — no need to load data first)
   const allFormTypes = useMemo<FormType[]>(() => {
-    const types = new Set(loadedFiles.map(f => f.formType ?? 'merch'));
+    const types = new Set(indexChannels.flatMap(c => c.formTypes ?? ['merch']));
     return (['merch', 'stock-count', 'stand'] as FormType[]).filter(t => types.has(t));
-  }, [loadedFiles]);
+  }, [indexChannels]);
 
   // Auto-set selFormType to first available when data changes
   useEffect(() => {
@@ -506,19 +506,20 @@ export default function Dashboard() {
   );
 
   // Channels whose headers don't match the first selected channel's headers
-  // (for the current form type) are grayed out. This prevents mixing
-  // incompatible column structures (e.g. different merch survey questions).
+  // (for the current form type) are grayed out. Before any channel is selected,
+  // channels without data for the selected form type are grayed out.
   const incompatibleChannels = useMemo(() => {
     const disabled = new Set<string>();
-    if (selChannels.length === 0) return disabled;
-    // Get fingerprint of the first selected channel for the current form type
-    const first = indexChannels.find(ic => ic.name === selChannels[0]);
+    // Get fingerprint of the first selected channel (if any) for matching
+    const first = selChannels.length > 0
+      ? indexChannels.find(ic => ic.name === selChannels[0])
+      : null;
     const targetFp = first?.headerFingerprints?.[selFormType];
     for (const c of allChannels) {
       if (selChannels.includes(c)) continue;
       const summary = indexChannels.find(ic => ic.name === c);
       const fp = summary?.headerFingerprints?.[selFormType];
-      // Disable if: no data for this form type, or columns don't match
+      // Disable if: no data for this form type, or columns don't match selected
       if (!fp || (targetFp && fp !== targetFp)) disabled.add(c);
     }
     return disabled;
