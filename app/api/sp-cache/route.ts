@@ -9,10 +9,11 @@ interface ChannelSummary {
   fileCount: number;
   rowCount: number;
   sources?: string[];
-  /** Form types present in this channel's data (merch, stock-count, stand).
-   *  Used by the dashboard to restrict multi-channel selection to channels
-   *  that share the currently-selected form type. */
   formTypes?: FormType[];
+  /** Sorted lowercase header fingerprint per form type.
+   *  Two channels are co-selectable only if their fingerprints match
+   *  for the currently-selected form type. */
+  headerFingerprints?: Record<string, string>;
 }
 
 interface IndexPayload {
@@ -75,6 +76,21 @@ function detectFormTypeFromHeaders(headers: string[]): FormType {
   if (set.has('stock on hand')) return 'stock-count';
   if (set.has('display stands identification')) return 'stand';
   return 'merch';
+}
+
+/** Lowercase-sorted header string — identical fingerprint = identical columns */
+function headerFingerprint(headers: string[]): string {
+  return headers.map(h => h.toLowerCase().trim()).sort().join('|');
+}
+
+/** Compute fingerprints keyed by form type from a set of files */
+function computeFingerprints(files: LoadedFile[]): Record<string, string> {
+  const fp: Record<string, string> = {};
+  for (const f of files) {
+    const ft = f.formType ?? detectFormTypeFromHeaders(f.headers);
+    if (!fp[ft]) fp[ft] = headerFingerprint(f.headers);
+  }
+  return fp;
 }
 
 /** Deduplicate rows by Visit UUID + formType — keeps first occurrence.
@@ -162,7 +178,7 @@ async function migrateIfNeeded(): Promise<IndexPayload | null> {
 // and compute values from its files, then write the index back.
 
 async function backfillIfNeeded(idx: IndexPayload): Promise<IndexPayload> {
-  const stale = idx.channels.filter(c => !c.sources || !c.formTypes);
+  const stale = idx.channels.filter(c => !c.sources || !c.formTypes || !c.headerFingerprints);
   if (stale.length === 0) return idx;
 
   for (const ch of stale) {
@@ -177,10 +193,14 @@ async function backfillIfNeeded(idx: IndexPayload): Promise<IndexPayload> {
           f.formType ?? detectFormTypeFromHeaders(f.headers)
         ))] as FormType[];
       }
+      if (!ch.headerFingerprints) {
+        ch.headerFingerprints = computeFingerprints(files);
+      }
     } catch (err) {
       console.error(`Backfill failed for channel "${ch.name}":`, err);
       if (!ch.sources) ch.sources = [];
       if (!ch.formTypes) ch.formTypes = ['merch'];
+      if (!ch.headerFingerprints) ch.headerFingerprints = {};
     }
   }
 
@@ -261,6 +281,7 @@ export async function POST(req: NextRequest) {
       rowCount: mergedFiles.reduce((s, f) => s + f.rowCount, 0),
       sources,
       formTypes,
+      headerFingerprints: computeFingerprints(mergedFiles),
     };
 
     if (idx) {

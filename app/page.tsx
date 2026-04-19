@@ -24,6 +24,7 @@ interface ChannelSummary {
   rowCount: number;
   sources?: string[];
   formTypes?: FormType[];
+  headerFingerprints?: Record<string, string>;
 }
 
 interface IndexPayload {
@@ -504,16 +505,21 @@ export default function Dashboard() {
     [indexChannels]
   );
 
-  // Channels that don't have the selected form type are grayed out.
-  // Only applies once a channel is selected (so form type is known).
+  // Channels whose headers don't match the first selected channel's headers
+  // (for the current form type) are grayed out. This prevents mixing
+  // incompatible column structures (e.g. different merch survey questions).
   const incompatibleChannels = useMemo(() => {
     const disabled = new Set<string>();
-    if (selChannels.length === 0) return disabled; // no restriction before first selection
+    if (selChannels.length === 0) return disabled;
+    // Get fingerprint of the first selected channel for the current form type
+    const first = indexChannels.find(ic => ic.name === selChannels[0]);
+    const targetFp = first?.headerFingerprints?.[selFormType];
     for (const c of allChannels) {
-      if (selChannels.includes(c)) continue; // never disable already-selected
+      if (selChannels.includes(c)) continue;
       const summary = indexChannels.find(ic => ic.name === c);
-      const channelFormTypes = summary?.formTypes ?? ['merch'];
-      if (!channelFormTypes.includes(selFormType)) disabled.add(c);
+      const fp = summary?.headerFingerprints?.[selFormType];
+      // Disable if: no data for this form type, or columns don't match
+      if (!fp || (targetFp && fp !== targetFp)) disabled.add(c);
     }
     return disabled;
   }, [allChannels, selChannels, selFormType, indexChannels]);
@@ -808,7 +814,7 @@ export default function Dashboard() {
                   selected={selChannels}
                   onChange={setSelChannels}
                   disabledItems={incompatibleChannels}
-                  disabledHint="This channel has no data for the selected form type"
+                  disabledHint="Different fields — not compatible with selected channel(s)"
                 />
                 {allFormTypes.length > 1 && (
                   <div>
