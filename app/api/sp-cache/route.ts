@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchSpFile, uploadSpFile, deleteSpFile } from '@/lib/graph-oj';
-import type { LoadedFile } from '@/lib/types';
+import type { FormType, LoadedFile } from '@/lib/types';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -8,10 +8,11 @@ interface ChannelSummary {
   name: string;
   fileCount: number;
   rowCount: number;
-  /** Original Excel filenames that contributed rows to this channel.
-   *  Used by the dashboard to determine which channels can be selected together
-   *  (channels sharing at least one source filename came from the same upload). */
   sources?: string[];
+  /** Form types present in this channel's data (merch, stock-count, stand).
+   *  Used by the dashboard to restrict multi-channel selection to channels
+   *  that share the currently-selected form type. */
+  formTypes?: FormType[];
 }
 
 interface IndexPayload {
@@ -64,6 +65,16 @@ async function fetchJson<T>(path: string): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+/** Detect form type from a file's stored headers (for backfill of legacy data).
+ *  Legacy files still have "Stock On Hand" in headers because it wasn't
+ *  filtered until this deploy. New files have formType set by the parser. */
+function detectFormTypeFromHeaders(headers: string[]): FormType {
+  const set = new Set(headers.map(h => h.toLowerCase().trim()));
+  if (set.has('stock on hand')) return 'stock-count';
+  if (set.has('display stands identification')) return 'stand';
+  return 'merch';
 }
 
 /** Deduplicate rows by Visit UUID + formType — keeps first occurrence.
@@ -145,23 +156,31 @@ async function migrateIfNeeded(): Promise<IndexPayload | null> {
   return newIndex;
 }
 
-// ─── One-time backfill: populate `sources` for legacy index entries ─────────
-// Channels uploaded before the sources feature was added have no `sources`
+// ─── One-time backfill: populate `sources` and `formTypes` for legacy entries
+// Channels uploaded before these features were added have no `sources`/`formTypes`
 // field. On first load after deploy, fetch each such channel's cached file
-// and compute sources from its files' fileNames, then write the index back.
+// and compute values from its files, then write the index back.
 
-async function backfillSourcesIfNeeded(idx: IndexPayload): Promise<IndexPayload> {
-  const stale = idx.channels.filter(c => !c.sources);
+async function backfillIfNeeded(idx: IndexPayload): Promise<IndexPayload> {
+  const stale = idx.channels.filter(c => !c.sources || !c.formTypes);
   if (stale.length === 0) return idx;
 
   for (const ch of stale) {
     try {
       const data = await fetchJson<ChannelData>(channelPath(ch.name));
-      const sources = [...new Set((data?.files ?? []).map(f => f.fileName).filter(Boolean))];
-      ch.sources = sources;
+      const files = data?.files ?? [];
+      if (!ch.sources) {
+        ch.sources = [...new Set(files.map(f => f.fileName).filter(Boolean))];
+      }
+      if (!ch.formTypes) {
+        ch.formTypes = [...new Set(files.map(f =>
+          f.formType ?? detectFormTypeFromHeaders(f.headers)
+        ))] as FormType[];
+      }
     } catch (err) {
       console.error(`Backfill failed for channel "${ch.name}":`, err);
-      ch.sources = []; // mark as attempted so we don't retry forever
+      if (!ch.sources) ch.sources = [];
+      if (!ch.formTypes) ch.formTypes = ['merch'];
     }
   }
 
@@ -195,8 +214,8 @@ export async function GET(req: NextRequest) {
     if (!idx) {
       return NextResponse.json(null, { headers: NO_CACHE });
     }
-    // One-time backfill of `sources` for channels uploaded before the feature
-    idx = await backfillSourcesIfNeeded(idx);
+    // One-time backfill of sources/formTypes for channels uploaded before these features
+    idx = await backfillIfNeeded(idx);
     return NextResponse.json(idx, { headers: NO_CACHE });
   } catch (err) {
     console.error('SP cache GET error:', err);
@@ -233,11 +252,15 @@ export async function POST(req: NextRequest) {
     //     accumulate the same source list and remain co-selectable)
     let idx = await fetchJson<IndexPayload>(indexPath());
     const sources = [...new Set(mergedFiles.map(f => f.fileName).filter(Boolean))];
+    const formTypes = [...new Set(mergedFiles.map(f =>
+      f.formType ?? detectFormTypeFromHeaders(f.headers)
+    ))] as FormType[];
     const channelSummary: ChannelSummary = {
       name: channel,
       fileCount: mergedFiles.length,
       rowCount: mergedFiles.reduce((s, f) => s + f.rowCount, 0),
       sources,
+      formTypes,
     };
 
     if (idx) {

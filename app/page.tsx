@@ -23,6 +23,7 @@ interface ChannelSummary {
   fileCount: number;
   rowCount: number;
   sources?: string[];
+  formTypes?: FormType[];
 }
 
 interface IndexPayload {
@@ -66,6 +67,14 @@ function isHiddenCol(h: string): boolean {
     }
   }
   return false;
+}
+
+/** Detect form type from file headers (handles legacy files loaded without formType) */
+function detectFormType(headers: string[]): FormType {
+  const set = new Set(headers.map(h => h.toLowerCase().trim()));
+  if (set.has('stock on hand')) return 'stock-count';
+  if (set.has('display stands identification')) return 'stand';
+  return 'merch';
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -495,6 +504,20 @@ export default function Dashboard() {
     [indexChannels]
   );
 
+  // Channels that don't have the selected form type are grayed out.
+  // Only applies once a channel is selected (so form type is known).
+  const incompatibleChannels = useMemo(() => {
+    const disabled = new Set<string>();
+    if (selChannels.length === 0) return disabled; // no restriction before first selection
+    for (const c of allChannels) {
+      if (selChannels.includes(c)) continue; // never disable already-selected
+      const summary = indexChannels.find(ic => ic.name === c);
+      const channelFormTypes = summary?.formTypes ?? ['merch'];
+      if (!channelFormTypes.includes(selFormType)) disabled.add(c);
+    }
+    return disabled;
+  }, [allChannels, selChannels, selFormType, indexChannels]);
+
   const allProvinces = useMemo(
     () => unique((mergedData?.rows ?? []).map(r => String(r['Province'] ?? '').trim()).filter(Boolean)),
     [mergedData]
@@ -590,7 +613,10 @@ export default function Dashboard() {
             .then(r => r.json() as Promise<ChannelData>)
         )
       );
-      const allFiles = results.flatMap(r => r?.files ?? []);
+      const allFiles = results.flatMap(r => (r?.files ?? []).map(f => ({
+        ...f,
+        formType: f.formType ?? detectFormType(f.headers),
+      })));
       setLoadedFiles(allFiles);
     } catch {
       setError(`Failed to load channel data`);
@@ -777,6 +803,8 @@ export default function Dashboard() {
                   items={allChannels}
                   selected={selChannels}
                   onChange={setSelChannels}
+                  disabledItems={incompatibleChannels}
+                  disabledHint="This channel has no data for the selected form type"
                 />
                 {allFormTypes.length > 1 && (
                   <div>
