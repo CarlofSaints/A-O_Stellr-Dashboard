@@ -560,10 +560,14 @@ export default function Dashboard() {
     setSelReps(allReps);
   }, [allProvinces, allReps]);
 
-  // Keep selStores in sync when availableStores shrinks (due to other filter changes)
+  // Keep selStores in sync when availableStores changes.
+  // If new stores appear (channels/form type added) → reset to all.
+  // If stores only shrink (province/rep/date narrowed) → keep valid selections.
   useEffect(() => {
     setSelStores(prev => {
       if (prev.length === 0) return availableStores; // initial load
+      const hasNewStores = availableStores.some(s => !prev.includes(s));
+      if (hasNewStores) return availableStores; // new channels added → show all
       const intersection = prev.filter(s => availableStores.includes(s));
       return intersection.length === 0 ? availableStores : intersection;
     });
