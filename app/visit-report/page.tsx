@@ -322,6 +322,13 @@ export default function VisitReportPage() {
   // Drag-drop highlight
   const [dragOver, setDragOver] = useState<'control' | 'data' | null>(null);
 
+  // Email report state
+  const [emailMode, setEmailMode] = useState(false);
+  const [emailAddresses, setEmailAddresses] = useState('');
+  const [emailing, setEmailing] = useState(false);
+  const [emailResult, setEmailResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [sizeConfirm, setSizeConfirm] = useState<{ sizeMB: string; base64: string; fname: string } | null>(null);
+
   // Resizable frozen column widths
   const [cw, setCw] = useState<ColWidths>({ num: 40, ch: 130, name: 260, code: 100 });
   const cwRef = useRef(cw);
@@ -703,9 +710,9 @@ export default function VisitReportPage() {
     return rows;
   }, [hasData, storeMap, selChannels, selStores, allChannels, filteredStoreLabels.length, weekCols, weekVisitMap]);
 
-  // ─── Export to Excel ────────────────────────────────────────────────────────
+  // ─── Build workbook (shared by download + email) ────────────────────────────
 
-  const exportToExcel = useCallback(() => {
+  const buildWorkbook = useCallback(() => {
     const wb = XLSX.utils.book_new();
 
     // Sheet 1: Channel Summary
@@ -718,7 +725,6 @@ export default function VisitReportPage() {
         'Contribution %': `${r.contribution.toFixed(1)}%`,
       }));
       const ws = XLSX.utils.json_to_sheet(csRows);
-      // Auto-size columns
       ws['!cols'] = [{ wch: 20 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 14 }];
       XLSX.utils.book_append_sheet(wb, ws, 'Channel Summary');
     }
@@ -785,10 +791,73 @@ export default function VisitReportPage() {
       XLSX.utils.book_append_sheet(wb, ws, 'Exceptions');
     }
 
-    // Generate filename with date range
-    const fname = `Visit Report ${dateFrom} to ${dateTo}.xlsx`;
-    XLSX.writeFile(wb, fname);
-  }, [channelSummary, gridRows, dateCols, weekGridRows, weekCols, exceptions, dateFrom, dateTo]);
+    return wb;
+  }, [channelSummary, gridRows, dateCols, weekGridRows, weekCols, exceptions]);
+
+  const reportFilename = `Visit Report ${dateFrom} to ${dateTo}.xlsx`;
+
+  // ─── Export to Excel (download) ────────────────────────────────────────────
+
+  const exportToExcel = useCallback(() => {
+    XLSX.writeFile(buildWorkbook(), reportFilename);
+  }, [buildWorkbook, reportFilename]);
+
+  // ─── Email report ──────────────────────────────────────────────────────────
+
+  const sendEmailReport = useCallback(async (overrideBase64?: string) => {
+    const trimmed = emailAddresses.trim();
+    if (!trimmed) { setEmailResult({ ok: false, msg: 'Enter at least one email address' }); return; }
+
+    const emails = trimmed.split(',').map(e => e.trim()).filter(Boolean);
+    const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const bad = emails.filter(e => !emailRe.test(e));
+    if (bad.length > 0) { setEmailResult({ ok: false, msg: `Invalid email(s): ${bad.join(', ')}` }); return; }
+
+    // Build XLSX buffer
+    const base64 = overrideBase64 ?? (() => {
+      const wb = buildWorkbook();
+      const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+      const bytes = new Uint8Array(buf);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary);
+    })();
+
+    // Check file size — warn if > 3 MB
+    const sizeBytes = (base64.length * 3) / 4; // approximate decoded size
+    const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(1);
+    if (!overrideBase64 && sizeBytes > 3 * 1024 * 1024) {
+      setSizeConfirm({ sizeMB, base64, fname: reportFilename });
+      return;
+    }
+
+    setEmailing(true);
+    setEmailResult(null);
+    try {
+      const res = await fetch('/api/visit-report/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          emails,
+          filename: reportFilename,
+          xlsxBase64: base64,
+          senderName: session?.name ?? 'Unknown',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setEmailResult({ ok: false, msg: json.error ?? 'Send failed' });
+      } else {
+        setEmailResult({ ok: true, msg: `Report sent to ${json.sentTo} recipient${json.sentTo > 1 ? 's' : ''} (${json.sizeMB} MB)` });
+        setEmailAddresses('');
+        setEmailMode(false);
+      }
+    } catch {
+      setEmailResult({ ok: false, msg: 'Network error — could not send email' });
+    } finally {
+      setEmailing(false);
+    }
+  }, [emailAddresses, buildWorkbook, reportFilename, session]);
 
   // ─── Clear filters ────────────────────────────────────────────────────────
 
@@ -1027,6 +1096,51 @@ export default function VisitReportPage() {
                         Export to Excel
                       </button>
                     </div>
+                  </div>
+
+                  {/* Email Report Section */}
+                  <div className="border-t border-gray-100 mt-3 pt-3">
+                    <div className="flex items-start gap-3">
+                      <label className="flex items-center gap-2 cursor-pointer shrink-0 pt-0.5">
+                        <input
+                          type="checkbox"
+                          checked={emailMode}
+                          onChange={(e) => { setEmailMode(e.target.checked); setEmailResult(null); setSizeConfirm(null); }}
+                          className="w-4 h-4 rounded border-gray-300 text-[#1B3A6B] focus:ring-[#1B3A6B]"
+                        />
+                        <span className="text-sm font-medium text-gray-700">Email this report</span>
+                      </label>
+                      {emailMode && (
+                        <div className="flex-1 flex items-center gap-2 flex-wrap">
+                          <input
+                            type="text"
+                            value={emailAddresses}
+                            onChange={(e) => setEmailAddresses(e.target.value)}
+                            placeholder="email@example.com, another@example.com"
+                            className="flex-1 min-w-[240px] px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:border-[#1B3A6B] placeholder:text-gray-400"
+                          />
+                          <button
+                            onClick={() => sendEmailReport()}
+                            disabled={emailing || !emailAddresses.trim()}
+                            className="px-4 py-1.5 text-sm text-white bg-[#1B3A6B] rounded-lg hover:bg-[#152f5a] transition-colors flex items-center gap-1.5 font-medium disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                          >
+                            {emailing ? (
+                              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            ) : (
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                              </svg>
+                            )}
+                            {emailing ? 'Sending...' : 'Send'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    {emailResult && (
+                      <div className={`mt-2 text-xs px-3 py-1.5 rounded-lg ${emailResult.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                        {emailResult.msg}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1268,6 +1382,42 @@ export default function VisitReportPage() {
           </>
         )}
       </main>
+
+      {/* Size warning modal */}
+      {sizeConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm mx-4">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <div>
+                <p className="font-semibold text-gray-800">Large file warning</p>
+                <p className="text-sm text-gray-500">This report is <strong>{sizeConfirm.sizeMB} MB</strong></p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600 mb-5">
+              You're about to email a file of {sizeConfirm.sizeMB} MB. Large attachments may be slow to deliver or blocked by some mail servers. Continue?
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setSizeConfirm(null)}
+                className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => { const b64 = sizeConfirm.base64; setSizeConfirm(null); sendEmailReport(b64); }}
+                className="px-4 py-2 text-sm text-white bg-[#1B3A6B] rounded-lg hover:bg-[#152f5a] transition-colors font-medium"
+              >
+                Send anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
