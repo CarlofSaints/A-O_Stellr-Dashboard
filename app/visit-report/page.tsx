@@ -486,12 +486,12 @@ export default function VisitReportPage() {
       for (const s of control.stores) {
         map.set(s.storeCode, { storeName: s.storeName, channel: s.channel });
       }
-      // Enrich with visit data names/channels (but don't add new stores)
+      // Fill gaps from visit data (control file is authoritative — don't overwrite)
       for (const v of visitData?.visits ?? []) {
         const existing = map.get(v.storeCode);
         if (existing) {
-          if (v.storeName) existing.storeName = v.storeName;
-          if (v.channel) existing.channel = v.channel;
+          if (!existing.storeName && v.storeName) existing.storeName = v.storeName;
+          if (!existing.channel && v.channel) existing.channel = v.channel;
         }
         // stores NOT in control file are excluded — they go to exceptions
       }
