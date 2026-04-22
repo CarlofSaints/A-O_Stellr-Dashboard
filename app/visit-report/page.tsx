@@ -490,8 +490,11 @@ export default function VisitReportPage() {
 
     if (control) {
       // Control file is the base — only these stores appear in grids
+      // First occurrence wins (don't let a later channel overwrite)
       for (const s of control.stores) {
-        map.set(s.storeCode, { storeName: s.storeName, channel: s.channel });
+        if (!map.has(s.storeCode)) {
+          map.set(s.storeCode, { storeName: s.storeName, channel: s.channel });
+        }
       }
       // Fill gaps from visit data (control file is authoritative — don't overwrite)
       for (const v of visitData?.visits ?? []) {
@@ -599,11 +602,12 @@ export default function VisitReportPage() {
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
 
     if (control) {
-      for (const s of control.stores) {
-        if (!chSet.has(s.channel)) continue;
-        const prev = channelMap.get(s.channel) ?? { baseStores: 0, visits: 0 };
+      // Use storeMap (deduplicated by storeCode) so base count matches the grids
+      for (const [, info] of storeMap) {
+        if (!chSet.has(info.channel)) continue;
+        const prev = channelMap.get(info.channel) ?? { baseStores: 0, visits: 0 };
         prev.baseStores++;
-        channelMap.set(s.channel, prev);
+        channelMap.set(info.channel, prev);
       }
     }
 
@@ -643,7 +647,7 @@ export default function VisitReportPage() {
       ...rows,
       { channel: 'Total', totalStores: totalBase, visits: totalVisits, contribution: 100, completion: -1 },
     ];
-  }, [hasData, control, gridRows, dateCols, dateFrom, dateTo, selChannels, allChannels]);
+  }, [hasData, control, storeMap, gridRows, dateCols, dateFrom, dateTo, selChannels, allChannels]);
 
   // ─── Week columns & week grid rows ─────────────────────────────────────────
 
