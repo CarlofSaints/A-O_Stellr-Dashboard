@@ -109,6 +109,12 @@ function weeksInRange(from: string, to: string): number {
   return Math.ceil(days / 7);
 }
 
+function monthsInRange(from: string, to: string): number {
+  const f = new Date(from + 'T00:00:00');
+  const t = new Date(to + 'T00:00:00');
+  return (t.getFullYear() - f.getFullYear()) * 12 + (t.getMonth() - f.getMonth()) + 1;
+}
+
 function fmtTimestamp(iso: string): string {
   return new Date(iso).toLocaleString('en-ZA', {
     day: '2-digit', month: 'short', year: 'numeric',
@@ -523,6 +529,14 @@ export default function VisitReportPage() {
       }));
   }, [controlCodeSet, visitData]);
 
+  // Filter exceptions by selected channels
+  const filteredExceptions = useMemo(() => {
+    if (exceptions.length === 0) return [];
+    if (selChannels.length === 0) return exceptions; // no filter = show all
+    const chSet = new Set(selChannels);
+    return exceptions.filter(ex => chSet.has(ex.channel));
+  }, [exceptions, selChannels]);
+
   const hasData = storeMap.size > 0;
 
   const allChannels = useMemo(
@@ -579,7 +593,7 @@ export default function VisitReportPage() {
   // Channel summary
   const channelSummary = useMemo(() => {
     if (!hasData || dateCols.length === 0) return [];
-    const weeks = weeksInRange(dateFrom, dateTo);
+    const months = monthsInRange(dateFrom, dateTo);
     const channelMap = new Map<string, { baseStores: number; visits: number }>();
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
 
@@ -619,8 +633,8 @@ export default function VisitReportPage() {
         totalStores: stats.baseStores,
         visits: stats.visits,
         contribution: totalVisits > 0 ? (stats.visits / totalVisits) * 100 : 0,
-        completion: stats.baseStores * weeks > 0
-          ? (stats.visits / (stats.baseStores * weeks)) * 100
+        completion: stats.baseStores * months > 0
+          ? (stats.visits / (stats.baseStores * months)) * 100
           : 0,
       }));
 
@@ -754,7 +768,7 @@ export default function VisitReportPage() {
 
     // Sheet 3: Week Summary
     if (weekGridRows.length > 0 && weekCols.length > 0) {
-      const wkHeaders = ['#', 'Channel', 'Store Name', 'Store Code', ...weekCols.map(wc => `${wc.line1} ${wc.line2}`)];
+      const wkHeaders = ['#', 'Channel', 'Store Name', 'Store Code', ...weekCols.map(wc => `${wc.line1} ${wc.line2}`), 'Total'];
       const data = weekGridRows.map((row, idx) => {
         const obj: Record<string, string | number> = {
           '#': idx + 1,
@@ -766,19 +780,21 @@ export default function VisitReportPage() {
           const cnt = row.weekVisits[wc.weekNum] ?? 0;
           obj[`${wc.line1} ${wc.line2}`] = cnt > 0 ? cnt : '';
         }
+        obj['Total'] = row.total;
         return obj;
       });
       const ws = XLSX.utils.json_to_sheet(data, { header: wkHeaders });
       ws['!cols'] = [
         { wch: 5 }, { wch: 18 }, { wch: 40 }, { wch: 14 },
         ...weekCols.map(() => ({ wch: 18 })),
+        { wch: 8 },
       ];
       XLSX.utils.book_append_sheet(wb, ws, 'Week Summary');
     }
 
-    // Sheet 4: Exceptions
-    if (exceptions.length > 0) {
-      const exRows = exceptions.map((ex, idx) => ({
+    // Sheet 4: Exceptions (filtered by channel selection)
+    if (filteredExceptions.length > 0) {
+      const exRows = filteredExceptions.map((ex, idx) => ({
         '#': idx + 1,
         'Channel': ex.channel,
         'Site Code': ex.storeCode,
@@ -792,7 +808,7 @@ export default function VisitReportPage() {
     }
 
     return wb;
-  }, [channelSummary, gridRows, dateCols, weekGridRows, weekCols, exceptions]);
+  }, [channelSummary, gridRows, dateCols, weekGridRows, weekCols, filteredExceptions]);
 
   const reportFilename = `Visit Report ${dateFrom} to ${dateTo}.xlsx`;
 
@@ -1151,7 +1167,7 @@ export default function VisitReportPage() {
                       <div>
                         <p className="text-sm font-semibold text-gray-700">Channel Summary</p>
                         <p className="text-xs text-gray-400">
-                          {dateFrom} to {dateTo} ({weeksInRange(dateFrom, dateTo)} week{weeksInRange(dateFrom, dateTo) !== 1 ? 's' : ''})
+                          {dateFrom} to {dateTo} ({monthsInRange(dateFrom, dateTo)} month{monthsInRange(dateFrom, dateTo) !== 1 ? 's' : ''}, target: 1 visit/store/month)
                         </p>
                       </div>
                       {!control && (
@@ -1280,7 +1296,7 @@ export default function VisitReportPage() {
                       </p>
                     </div>
                     <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto', position: 'relative' }}>
-                      <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: `${cw.num + cw.ch + cw.name + cw.code + weekCols.length * 90}px` }}>
+                      <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: `${cw.num + cw.ch + cw.name + cw.code + weekCols.length * 90 + 70}px` }}>
                         <thead className="sticky top-0" style={{ zIndex: 20 }}>
                           <tr>
                             <th className="px-2 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(0, cw, HEADER_BG, true)}>
@@ -1302,16 +1318,21 @@ export default function VisitReportPage() {
                                 <div className="text-[10px] font-normal opacity-80">{wc.line2}</div>
                               </th>
                             ))}
+                            <th className="px-3 py-2.5 text-center text-xs font-semibold text-white"
+                              style={{ backgroundColor: HEADER_BG, borderBottom: GRID_BORDER, minWidth: 70 }}>
+                              Total
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
                           {weekGridRows.map((row, idx) => {
                             const bg = rowBg(row.total > 0, idx);
+                            const isZero = row.total === 0;
                             return (
                               <tr key={`wk-${row.storeCode}-${idx}`}>
                                 <td className="px-2 py-1.5 text-xs text-gray-400" style={frozenCell(0, cw, bg, false)}>{idx + 1}</td>
                                 <td className="px-3 py-1.5 text-xs text-gray-600 whitespace-nowrap overflow-hidden text-ellipsis" style={frozenCell(1, cw, bg, false)}>{row.channel}</td>
-                                <td className="px-3 py-1.5 text-gray-800 font-medium overflow-hidden text-ellipsis" style={frozenCell(2, cw, bg, false)}>{row.storeName}</td>
+                                <td className="px-3 py-1.5 font-medium overflow-hidden text-ellipsis" style={{ ...frozenCell(2, cw, bg, false), ...(isZero ? { color: '#dc2626', fontWeight: 700 } : { color: '#1f2937' }) }}>{row.storeName}</td>
                                 <td className="px-3 py-1.5 text-xs text-gray-600" style={frozenCell(3, cw, bg, false)}>{row.storeCode}</td>
                                 {weekCols.map(wc => {
                                   const cnt = row.weekVisits[wc.weekNum] ?? 0;
@@ -1326,6 +1347,10 @@ export default function VisitReportPage() {
                                     </td>
                                   );
                                 })}
+                                <td className="px-3 py-1.5 text-center text-xs font-bold"
+                                  style={{ backgroundColor: isZero ? '#fef2f2' : bg, color: isZero ? '#dc2626' : '#1B3A6B', borderBottom: GRID_BORDER, minWidth: 70 }}>
+                                  {row.total}
+                                </td>
                               </tr>
                             );
                           })}
@@ -1336,13 +1361,13 @@ export default function VisitReportPage() {
                 )}
 
                 {/* ──────── Exceptions Grid ──────── */}
-                {exceptions.length > 0 && (
+                {filteredExceptions.length > 0 && (
                   <div className="bg-white rounded-xl border border-amber-300 shadow-sm overflow-hidden mt-5">
                     <div className="px-4 py-3 border-b border-amber-200 bg-amber-50">
                       <p className="text-sm font-semibold text-amber-800">
                         Exceptions
                         <span className="ml-2 text-xs font-normal text-amber-600">
-                          {exceptions.length} visits from {new Set(exceptions.map(e => e.storeCode)).size} unique stores not in the Site Control File
+                          {filteredExceptions.length} visits from {new Set(filteredExceptions.map(e => e.storeCode)).size} unique stores not in the Site Control File
                         </span>
                       </p>
                     </div>
@@ -1359,7 +1384,7 @@ export default function VisitReportPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {exceptions.map((ex, idx) => {
+                          {filteredExceptions.map((ex, idx) => {
                             const bg = idx % 2 === 0 ? '#ffffff' : '#fffbeb';
                             return (
                               <tr key={`ex-${idx}`}>
