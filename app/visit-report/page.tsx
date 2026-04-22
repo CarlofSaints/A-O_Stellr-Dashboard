@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -726,97 +727,142 @@ export default function VisitReportPage() {
 
   // ─── Build workbook (shared by download + email) ────────────────────────────
 
-  const buildWorkbook = useCallback(() => {
-    const wb = XLSX.utils.book_new();
+  const buildWorkbookBuffer = useCallback(async (): Promise<ArrayBuffer> => {
+    const wb = new ExcelJS.Workbook();
+    const redFont: Partial<ExcelJS.Font> = { color: { argb: 'FFDC2626' }, bold: true };
+    const redFill: ExcelJS.Fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF2F2' } };
+    const headerFont: Partial<ExcelJS.Font> = { bold: true, color: { argb: 'FFFFFFFF' } };
+    const headerFill: ExcelJS.Fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1B3A6B' } };
 
     // Sheet 1: Channel Summary
     if (channelSummary.length > 0) {
-      const csRows = channelSummary.map(r => ({
-        'Channel': r.channel,
-        'Total Stores (Base)': r.totalStores,
-        'Visits in Period': r.visits,
-        'Completion %': r.completion < 0 ? '' : `${r.completion.toFixed(1)}%`,
-        'Contribution %': `${r.contribution.toFixed(1)}%`,
-      }));
-      const ws = XLSX.utils.json_to_sheet(csRows);
-      ws['!cols'] = [{ wch: 20 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 14 }];
-      XLSX.utils.book_append_sheet(wb, ws, 'Channel Summary');
+      const ws = wb.addWorksheet('Channel Summary');
+      ws.columns = [
+        { header: 'Channel', key: 'channel', width: 20 },
+        { header: 'Total Stores (Base)', key: 'stores', width: 18 },
+        { header: 'Visits in Period', key: 'visits', width: 16 },
+        { header: 'Completion %', key: 'completion', width: 14 },
+        { header: 'Contribution %', key: 'contribution', width: 14 },
+      ];
+      ws.getRow(1).font = headerFont;
+      ws.getRow(1).fill = headerFill;
+      for (const r of channelSummary) {
+        ws.addRow({
+          channel: r.channel,
+          stores: r.totalStores,
+          visits: r.visits,
+          completion: r.completion < 0 ? '' : `${r.completion.toFixed(1)}%`,
+          contribution: `${r.contribution.toFixed(1)}%`,
+        });
+      }
     }
 
     // Sheet 2: Daily Visit Grid
     if (gridRows.length > 0 && dateCols.length > 0) {
-      const headers = ['#', 'Channel', 'Store Name', 'Store Code', ...dateCols.map(d => fmtDate(d))];
-      const data = gridRows.map((row, idx) => {
-        const obj: Record<string, string | number> = {
-          '#': idx + 1,
-          'Channel': row.channel,
-          'Store Name': row.storeName,
-          'Store Code': row.storeCode,
-        };
-        for (const d of dateCols) {
-          obj[fmtDate(d)] = row.visits[d] ? '✓' : '';
-        }
-        return obj;
-      });
-      const ws = XLSX.utils.json_to_sheet(data, { header: headers });
-      ws['!cols'] = [
-        { wch: 5 }, { wch: 18 }, { wch: 40 }, { wch: 14 },
-        ...dateCols.map(() => ({ wch: 12 })),
+      const ws = wb.addWorksheet('Daily Visit Grid');
+      const dateHeaders = dateCols.map(d => fmtDate(d));
+      ws.columns = [
+        { header: '#', key: 'num', width: 5 },
+        { header: 'Channel', key: 'channel', width: 18 },
+        { header: 'Store Name', key: 'storeName', width: 40 },
+        { header: 'Store Code', key: 'storeCode', width: 14 },
+        ...dateHeaders.map(h => ({ header: h, key: h, width: 12 })),
       ];
-      XLSX.utils.book_append_sheet(wb, ws, 'Daily Visit Grid');
+      ws.getRow(1).font = headerFont;
+      ws.getRow(1).fill = headerFill;
+      gridRows.forEach((row, idx) => {
+        const obj: Record<string, string | number> = {
+          num: idx + 1,
+          channel: row.channel,
+          storeName: row.storeName,
+          storeCode: row.storeCode,
+        };
+        for (const d of dateCols) obj[fmtDate(d)] = row.visits[d] ? '\u2713' : '';
+        ws.addRow(obj);
+      });
     }
 
-    // Sheet 3: Week Summary
+    // Sheet 3: Week Summary (with red highlighting for zero-total stores)
     if (weekGridRows.length > 0 && weekCols.length > 0) {
-      const wkHeaders = ['#', 'Channel', 'Store Name', 'Store Code', ...weekCols.map(wc => `${wc.line1} ${wc.line2}`), 'Total'];
-      const data = weekGridRows.map((row, idx) => {
+      const ws = wb.addWorksheet('Week Summary');
+      const wkKeys = weekCols.map(wc => `${wc.line1} ${wc.line2}`);
+      ws.columns = [
+        { header: '#', key: 'num', width: 5 },
+        { header: 'Channel', key: 'channel', width: 18 },
+        { header: 'Store Name', key: 'storeName', width: 40 },
+        { header: 'Store Code', key: 'storeCode', width: 14 },
+        ...wkKeys.map(k => ({ header: k, key: k, width: 18 })),
+        { header: 'Total', key: 'total', width: 8 },
+      ];
+      ws.getRow(1).font = headerFont;
+      ws.getRow(1).fill = headerFill;
+      weekGridRows.forEach((row, idx) => {
         const obj: Record<string, string | number> = {
-          '#': idx + 1,
-          'Channel': row.channel,
-          'Store Name': row.storeName,
-          'Store Code': row.storeCode,
+          num: idx + 1,
+          channel: row.channel,
+          storeName: row.storeName,
+          storeCode: row.storeCode,
         };
         for (const wc of weekCols) {
           const cnt = row.weekVisits[wc.weekNum] ?? 0;
           obj[`${wc.line1} ${wc.line2}`] = cnt > 0 ? cnt : '';
         }
-        obj['Total'] = row.total;
-        return obj;
+        obj.total = row.total;
+        const xlRow = ws.addRow(obj);
+        if (row.total === 0) {
+          // Red font on Store Name cell (col 3)
+          xlRow.getCell(3).font = redFont;
+          xlRow.getCell(3).fill = redFill;
+          // Red font + fill on Total cell (last col)
+          const totalCol = 4 + weekCols.length + 1; // num,channel,storeName,storeCode + weeks + total
+          xlRow.getCell(totalCol).font = redFont;
+          xlRow.getCell(totalCol).fill = redFill;
+        }
       });
-      const ws = XLSX.utils.json_to_sheet(data, { header: wkHeaders });
-      ws['!cols'] = [
-        { wch: 5 }, { wch: 18 }, { wch: 40 }, { wch: 14 },
-        ...weekCols.map(() => ({ wch: 18 })),
-        { wch: 8 },
-      ];
-      XLSX.utils.book_append_sheet(wb, ws, 'Week Summary');
     }
 
     // Sheet 4: Exceptions (filtered by channel selection)
     if (filteredExceptions.length > 0) {
-      const exRows = filteredExceptions.map((ex, idx) => ({
-        '#': idx + 1,
-        'Channel': ex.channel,
-        'Site Code': ex.storeCode,
-        'Store Name': ex.storeName,
-        'Visit UUID': ex.visitUuid,
-        'Date': ex.date,
-      }));
-      const ws = XLSX.utils.json_to_sheet(exRows);
-      ws['!cols'] = [{ wch: 5 }, { wch: 18 }, { wch: 14 }, { wch: 40 }, { wch: 38 }, { wch: 12 }];
-      XLSX.utils.book_append_sheet(wb, ws, 'Exceptions');
+      const ws = wb.addWorksheet('Exceptions');
+      ws.columns = [
+        { header: '#', key: 'num', width: 5 },
+        { header: 'Channel', key: 'channel', width: 18 },
+        { header: 'Site Code', key: 'siteCode', width: 14 },
+        { header: 'Store Name', key: 'storeName', width: 40 },
+        { header: 'Visit UUID', key: 'visitUuid', width: 38 },
+        { header: 'Date', key: 'date', width: 12 },
+      ];
+      ws.getRow(1).font = headerFont;
+      ws.getRow(1).fill = headerFill;
+      filteredExceptions.forEach((ex, idx) => {
+        ws.addRow({
+          num: idx + 1,
+          channel: ex.channel,
+          siteCode: ex.storeCode,
+          storeName: ex.storeName,
+          visitUuid: ex.visitUuid,
+          date: ex.date,
+        });
+      });
     }
 
-    return wb;
+    return wb.xlsx.writeBuffer();
   }, [channelSummary, gridRows, dateCols, weekGridRows, weekCols, filteredExceptions]);
 
   const reportFilename = `Visit Report ${dateFrom} to ${dateTo}.xlsx`;
 
   // ─── Export to Excel (download) ────────────────────────────────────────────
 
-  const exportToExcel = useCallback(() => {
-    XLSX.writeFile(buildWorkbook(), reportFilename);
-  }, [buildWorkbook, reportFilename]);
+  const exportToExcel = useCallback(async () => {
+    const buf = await buildWorkbookBuffer();
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = reportFilename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [buildWorkbookBuffer, reportFilename]);
 
   // ─── Email report ──────────────────────────────────────────────────────────
 
@@ -830,14 +876,14 @@ export default function VisitReportPage() {
     if (bad.length > 0) { setEmailResult({ ok: false, msg: `Invalid email(s): ${bad.join(', ')}` }); return; }
 
     // Build XLSX buffer
-    const base64 = overrideBase64 ?? (() => {
-      const wb = buildWorkbook();
-      const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+    let base64 = overrideBase64 ?? '';
+    if (!overrideBase64) {
+      const buf = await buildWorkbookBuffer();
       const bytes = new Uint8Array(buf);
       let binary = '';
       for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-      return btoa(binary);
-    })();
+      base64 = btoa(binary);
+    }
 
     // Check file size — warn if > 3 MB
     const sizeBytes = (base64.length * 3) / 4; // approximate decoded size
@@ -873,7 +919,7 @@ export default function VisitReportPage() {
     } finally {
       setEmailing(false);
     }
-  }, [emailAddresses, buildWorkbook, reportFilename, session]);
+  }, [emailAddresses, buildWorkbookBuffer, reportFilename, session]);
 
   // ─── Clear filters ────────────────────────────────────────────────────────
 
