@@ -1342,7 +1342,7 @@ export default function VisitReportPage() {
                       <p className="text-sm font-semibold text-amber-800">
                         Exceptions
                         <span className="ml-2 text-xs font-normal text-amber-600">
-                          {exceptions.length} visits from stores not in the Site Control File
+                          {exceptions.length} visits from {new Set(exceptions.map(e => e.storeCode)).size} unique stores not in the Site Control File
                         </span>
                       </p>
                     </div>
