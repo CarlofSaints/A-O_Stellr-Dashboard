@@ -49,6 +49,12 @@ interface GridRow {
   visitCount: number;
 }
 
+interface StoreGroup {
+  storeName: string;
+  storeCodes: string[];
+  channel: string;
+}
+
 interface WeekCol {
   weekNum: number;
   monIso: string;
@@ -141,6 +147,65 @@ function completionStyle(pct: number): React.CSSProperties {
   if (pct >= 40)  return { backgroundColor: '#fde68a', color: '#92400e' }; // amber-200 / amber-800
   if (pct >= 20)  return { backgroundColor: '#fca5a5', color: '#991b1b' }; // red-300 / red-800
   return { backgroundColor: '#dc2626', color: '#fff' };                     // red-600 (dark red)
+}
+
+/** Deduplicate control-file stores within each channel.
+ *  Two entries in the same channel are the "same store" if they share
+ *  the same store code OR the same store name (case-insensitive).
+ *  Uses union-find to handle transitive matches. */
+function deduplicateStores(stores: CtrlStore[]): StoreGroup[] {
+  const byChannel = new Map<string, CtrlStore[]>();
+  for (const s of stores) {
+    if (!byChannel.has(s.channel)) byChannel.set(s.channel, []);
+    byChannel.get(s.channel)!.push(s);
+  }
+
+  const result: StoreGroup[] = [];
+
+  for (const [channel, entries] of byChannel) {
+    const parent = entries.map((_, i) => i);
+
+    const find = (x: number): number => {
+      while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+      return x;
+    };
+    const unite = (a: number, b: number) => {
+      const ra = find(a), rb = find(b);
+      if (ra !== rb) parent[ra] = rb;
+    };
+
+    const byName = new Map<string, number>();
+    const byCode = new Map<string, number>();
+
+    for (let i = 0; i < entries.length; i++) {
+      const nameKey = entries[i].storeName.toLowerCase().trim();
+      const codeKey = entries[i].storeCode.trim();
+
+      if (nameKey) {
+        if (byName.has(nameKey)) unite(i, byName.get(nameKey)!);
+        else byName.set(nameKey, i);
+      }
+      if (codeKey) {
+        if (byCode.has(codeKey)) unite(i, byCode.get(codeKey)!);
+        else byCode.set(codeKey, i);
+      }
+    }
+
+    const groups = new Map<number, number[]>();
+    for (let i = 0; i < entries.length; i++) {
+      const root = find(i);
+      if (!groups.has(root)) groups.set(root, []);
+      groups.get(root)!.push(i);
+    }
+
+    for (const indices of groups.values()) {
+      const codes = [...new Set(indices.map(i => entries[i].storeCode))];
+      const name = entries[indices[0]].storeName;
+      result.push({ storeName: name, storeCodes: codes, channel });
+    }
+  }
+
+  return result;
 }
 
 // ─── MultiSelect ─────────────────────────────────────────────────────────────
@@ -485,38 +550,42 @@ export default function VisitReportPage() {
     return new Set(control.stores.map(s => s.storeCode));
   }, [control]);
 
-  const storeMap = useMemo(() => {
-    const map = new Map<string, { storeName: string; channel: string }>();
-
+  // Deduplicated store groups — within each channel, stores sharing
+  // the same code OR same name (case-insensitive) are merged into one group.
+  const storeGroups = useMemo((): StoreGroup[] => {
     if (control) {
-      // Control file is the base — only these stores appear in grids
-      // First occurrence wins (don't let a later channel overwrite)
-      for (const s of control.stores) {
-        if (!map.has(s.storeCode)) {
-          map.set(s.storeCode, { storeName: s.storeName, channel: s.channel });
+      const groups = deduplicateStores(control.stores);
+      // Fill in missing names from visit data
+      if (visitData) {
+        const visitNameMap = new Map<string, string>();
+        for (const v of visitData.visits) {
+          if (v.storeName && !visitNameMap.has(v.storeCode)) {
+            visitNameMap.set(v.storeCode, v.storeName);
+          }
+        }
+        for (const g of groups) {
+          if (!g.storeName) {
+            for (const code of g.storeCodes) {
+              const vName = visitNameMap.get(code);
+              if (vName) { g.storeName = vName; break; }
+            }
+          }
         }
       }
-      // Fill gaps from visit data (control file is authoritative — don't overwrite)
-      for (const v of visitData?.visits ?? []) {
-        const existing = map.get(v.storeCode);
-        if (existing) {
-          if (!existing.storeName && v.storeName) existing.storeName = v.storeName;
-          if (!existing.channel && v.channel) existing.channel = v.channel;
-        }
-        // stores NOT in control file are excluded — they go to exceptions
-      }
-    } else {
-      // No control file — visit data is the universe
-      for (const v of visitData?.visits ?? []) {
-        if (!map.has(v.storeCode)) {
-          map.set(v.storeCode, {
-            storeName: v.storeName || v.storeCode,
-            channel: v.channel || 'Unknown',
-          });
-        }
+      return groups;
+    }
+    // No control file — visit data is the universe (one group per storeCode)
+    const seen = new Map<string, StoreGroup>();
+    for (const v of visitData?.visits ?? []) {
+      if (!seen.has(v.storeCode)) {
+        seen.set(v.storeCode, {
+          storeName: v.storeName || v.storeCode,
+          storeCodes: [v.storeCode],
+          channel: v.channel || 'Unknown',
+        });
       }
     }
-    return map;
+    return [...seen.values()];
   }, [control, visitData]);
 
   // Exceptions: visits whose storeCode is NOT in the control file
@@ -541,21 +610,21 @@ export default function VisitReportPage() {
     return exceptions.filter(ex => chSet.has(ex.channel));
   }, [exceptions, selChannels]);
 
-  const hasData = storeMap.size > 0;
+  const hasData = storeGroups.length > 0;
 
   const allChannels = useMemo(
-    () => unique([...storeMap.values()].map(s => s.channel)),
-    [storeMap]
+    () => unique(storeGroups.map(g => g.channel)),
+    [storeGroups]
   );
 
   const filteredStoreLabels = useMemo(() => {
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
     const labels: string[] = [];
-    for (const [code, info] of storeMap) {
-      if (chSet.has(info.channel)) labels.push(`${info.storeName} (${code})`);
+    for (const g of storeGroups) {
+      if (chSet.has(g.channel)) labels.push(`${g.storeName} (${g.storeCodes[0]})`);
     }
     return labels.sort();
-  }, [storeMap, selChannels, allChannels]);
+  }, [storeGroups, selChannels, allChannels]);
 
   // Date columns
   const dateCols = useMemo(
@@ -570,7 +639,7 @@ export default function VisitReportPage() {
     return set;
   }, [visitData]);
 
-  // Grid rows (daily)
+  // Grid rows (daily) — one row per deduplicated store group
   const gridRows = useMemo((): GridRow[] => {
     if (!hasData || dateCols.length === 0) return [];
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
@@ -578,23 +647,30 @@ export default function VisitReportPage() {
       ? new Set(selStores) : null;
 
     const rows: GridRow[] = [];
-    for (const [code, info] of storeMap) {
-      if (!chSet.has(info.channel)) continue;
-      if (stSet && !stSet.has(`${info.storeName} (${code})`)) continue;
+    for (const g of storeGroups) {
+      if (!chSet.has(g.channel)) continue;
+      if (stSet && !stSet.has(`${g.storeName} (${g.storeCodes[0]})`)) continue;
       const visits: Record<string, boolean> = {};
       let visitCount = 0;
       for (const d of dateCols) {
-        const has = visitSet.has(`${code}|${d}`);
+        // A visit counts if ANY code in the group was visited on that date
+        const has = g.storeCodes.some(code => visitSet.has(`${code}|${d}`));
         visits[d] = has;
         if (has) visitCount++;
       }
-      rows.push({ storeName: info.storeName, storeCode: code, channel: info.channel, visits, visitCount });
+      rows.push({
+        storeName: g.storeName,
+        storeCode: g.storeCodes.join(' / '),
+        channel: g.channel,
+        visits,
+        visitCount,
+      });
     }
     rows.sort((a, b) => a.channel.localeCompare(b.channel) || a.storeName.localeCompare(b.storeName));
     return rows;
-  }, [hasData, storeMap, selChannels, selStores, allChannels, filteredStoreLabels.length, dateCols, visitSet]);
+  }, [hasData, storeGroups, selChannels, selStores, allChannels, filteredStoreLabels.length, dateCols, visitSet]);
 
-  // Channel summary
+  // Channel summary — base store count from deduplicated groups
   const channelSummary = useMemo(() => {
     if (!hasData || dateCols.length === 0) return [];
     const months = monthsInRange(dateFrom, dateTo);
@@ -602,12 +678,12 @@ export default function VisitReportPage() {
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
 
     if (control) {
-      // Use storeMap (deduplicated by storeCode) so base count matches the grids
-      for (const [, info] of storeMap) {
-        if (!chSet.has(info.channel)) continue;
-        const prev = channelMap.get(info.channel) ?? { baseStores: 0, visits: 0 };
+      // Base count from deduplicated groups (independent of store filter)
+      for (const g of storeGroups) {
+        if (!chSet.has(g.channel)) continue;
+        const prev = channelMap.get(g.channel) ?? { baseStores: 0, visits: 0 };
         prev.baseStores++;
-        channelMap.set(info.channel, prev);
+        channelMap.set(g.channel, prev);
       }
     }
 
@@ -616,16 +692,6 @@ export default function VisitReportPage() {
       prev.visits += row.visitCount;
       if (!control) prev.baseStores++;
       channelMap.set(row.channel, prev);
-    }
-
-    if (control) {
-      for (const row of gridRows) {
-        const entry = channelMap.get(row.channel);
-        if (entry && entry.baseStores === 0) {
-          const storesInCh = gridRows.filter(r => r.channel === row.channel);
-          entry.baseStores = new Set(storesInCh.map(r => r.storeCode)).size;
-        }
-      }
     }
 
     const totalVisits = [...channelMap.values()].reduce((s, v) => s + v.visits, 0);
@@ -647,7 +713,7 @@ export default function VisitReportPage() {
       ...rows,
       { channel: 'Total', totalStores: totalBase, visits: totalVisits, contribution: 100, completion: -1 },
     ];
-  }, [hasData, control, storeMap, gridRows, dateCols, dateFrom, dateTo, selChannels, allChannels]);
+  }, [hasData, control, storeGroups, gridRows, dateCols, dateFrom, dateTo, selChannels, allChannels]);
 
   // ─── Week columns & week grid rows ─────────────────────────────────────────
 
@@ -704,7 +770,7 @@ export default function VisitReportPage() {
     return map;
   }, [visitData]);
 
-  // Week grid rows — same stores as daily grid, with per-week counts
+  // Week grid rows — one row per deduplicated store group, with per-week counts
   const weekGridRows = useMemo(() => {
     if (!hasData || weekCols.length === 0) return [];
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
@@ -712,22 +778,26 @@ export default function VisitReportPage() {
       ? new Set(selStores) : null;
 
     const rows: { storeName: string; storeCode: string; channel: string; weekVisits: Record<number, number>; total: number }[] = [];
-    for (const [code, info] of storeMap) {
-      if (!chSet.has(info.channel)) continue;
-      if (stSet && !stSet.has(`${info.storeName} (${code})`)) continue;
-      const sw = weekVisitMap.get(code);
+    for (const g of storeGroups) {
+      if (!chSet.has(g.channel)) continue;
+      if (stSet && !stSet.has(`${g.storeName} (${g.storeCodes[0]})`)) continue;
+      // Aggregate week visits across all codes in the group
       const weekVisits: Record<number, number> = {};
       let total = 0;
       for (const wc of weekCols) {
-        const cnt = sw?.get(wc.weekNum) ?? 0;
+        let cnt = 0;
+        for (const code of g.storeCodes) {
+          const sw = weekVisitMap.get(code);
+          cnt += sw?.get(wc.weekNum) ?? 0;
+        }
         weekVisits[wc.weekNum] = cnt;
         total += cnt;
       }
-      rows.push({ storeName: info.storeName, storeCode: code, channel: info.channel, weekVisits, total });
+      rows.push({ storeName: g.storeName, storeCode: g.storeCodes.join(' / '), channel: g.channel, weekVisits, total });
     }
     rows.sort((a, b) => a.channel.localeCompare(b.channel) || a.storeName.localeCompare(b.storeName));
     return rows;
-  }, [hasData, storeMap, selChannels, selStores, allChannels, filteredStoreLabels.length, weekCols, weekVisitMap]);
+  }, [hasData, storeGroups, selChannels, selStores, allChannels, filteredStoreLabels.length, weekCols, weekVisitMap]);
 
   // ─── Build workbook (shared by download + email) ────────────────────────────
 
@@ -973,7 +1043,7 @@ export default function VisitReportPage() {
           <div className="flex items-center gap-5">
             <Image src="/perigee-logo.jpg" alt="Perigee" width={72} height={28} className="object-contain rounded" />
             <div className="h-6 w-px bg-gray-200" />
-            <Image src="/stellr-logo.png" alt="Stellr" width={110} height={34} className="object-contain" />
+            <Image src="/stellr-logo.png" alt="Stellr" width={44} height={44} className="object-contain" />
             <div className="h-6 w-px bg-gray-200" />
             <div className="text-right">
               <p className="text-[#1B3A6B] text-xs font-semibold">{session?.name}</p>
@@ -1039,7 +1109,7 @@ export default function VisitReportPage() {
                   </div>
                   {control ? (
                     <div className="text-xs text-gray-500 space-y-1 mb-3">
-                      <p><span className="font-medium text-gray-700">{control.stores.length}</span> stores across <span className="font-medium text-gray-700">{unique(control.stores.map(s => s.channel)).length}</span> channels</p>
+                      <p><span className="font-medium text-gray-700">{storeGroups.length}</span> unique stores ({control.stores.length} rows) across <span className="font-medium text-gray-700">{unique(control.stores.map(s => s.channel)).length}</span> channels</p>
                       <p>Updated {fmtTimestamp(control.updatedAt)} by {control.updatedBy}</p>
                     </div>
                   ) : (

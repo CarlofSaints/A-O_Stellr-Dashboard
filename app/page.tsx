@@ -764,7 +764,7 @@ export default function Dashboard() {
           <div className="flex items-center gap-5">
             <Image src="/perigee-logo.jpg" alt="Perigee" width={72} height={28} className="object-contain rounded" />
             <div className="h-6 w-px bg-gray-200" />
-            <Image src="/stellr-logo.png" alt="Stellr" width={110} height={34} className="object-contain" />
+            <Image src="/stellr-logo.png" alt="Stellr" width={44} height={44} className="object-contain" />
             <div className="h-6 w-px bg-gray-200" />
             <div className="text-right">
               <p className="text-[#1B3A6B] text-xs font-semibold">{session?.name}</p>
