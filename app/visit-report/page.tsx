@@ -19,6 +19,7 @@ interface CtrlStore {
   storeName: string;
   storeCode: string;
   channel: string;
+  status?: string; // ACTIVE or CLOSED
 }
 
 interface ControlPayload {
@@ -45,6 +46,7 @@ interface GridRow {
   storeName: string;
   storeCode: string;
   channel: string;
+  status: string;
   visits: Record<string, boolean>;
   visitCount: number;
 }
@@ -53,6 +55,7 @@ interface StoreGroup {
   storeName: string;
   storeCodes: string[];
   channel: string;
+  status: string;
 }
 
 interface WeekCol {
@@ -201,7 +204,9 @@ function deduplicateStores(stores: CtrlStore[]): StoreGroup[] {
     for (const indices of groups.values()) {
       const codes = [...new Set(indices.map(i => entries[i].storeCode))];
       const name = entries[indices[0]].storeName;
-      result.push({ storeName: name, storeCodes: codes, channel });
+      // If any entry in the group is CLOSED, the group is CLOSED
+      const status = indices.some(i => (entries[i].status ?? 'ACTIVE') === 'CLOSED') ? 'CLOSED' : 'ACTIVE';
+      result.push({ storeName: name, storeCodes: codes, channel, status });
     }
   }
 
@@ -337,14 +342,14 @@ function MultiSelect({
 
 const GRID_BORDER = '1px solid #e5e7eb'; // gray-200
 
-type ColWidths = { num: number; ch: number; name: number; code: number };
+type ColWidths = { num: number; ch: number; name: number; code: number; st: number };
 
 function frozenOffsets(cw: ColWidths) {
-  return [0, cw.num, cw.num + cw.ch, cw.num + cw.ch + cw.name];
+  return [0, cw.num, cw.num + cw.ch, cw.num + cw.ch + cw.name, cw.num + cw.ch + cw.name + cw.code];
 }
 
 function frozenWidths(cw: ColWidths) {
-  return [cw.num, cw.ch, cw.name, cw.code];
+  return [cw.num, cw.ch, cw.name, cw.code, cw.st];
 }
 
 /** Style for a frozen (sticky-left) cell */
@@ -364,7 +369,7 @@ function frozenCell(
     borderRight: GRID_BORDER,
     borderBottom: GRID_BORDER,
     boxSizing: 'border-box',
-    ...(colIdx === 3 ? { borderRightWidth: 2, borderRightColor: '#cbd5e1' } : {}), // heavier divider after last frozen col
+    ...(colIdx === 4 ? { borderRightWidth: 2, borderRightColor: '#cbd5e1' } : {}), // heavier divider after last frozen col
   };
 }
 
@@ -388,6 +393,7 @@ export default function VisitReportPage() {
   // Filters
   const [selChannels, setSelChannels] = useState<string[]>([]);
   const [selStores, setSelStores] = useState<string[]>([]);
+  const [selStatuses, setSelStatuses] = useState<string[]>([]);
   const [dateFrom, setDateFrom] = useState(currentWeekMon);
   const [dateTo, setDateTo] = useState(currentWeekSun);
 
@@ -402,7 +408,7 @@ export default function VisitReportPage() {
   const [sizeConfirm, setSizeConfirm] = useState<{ sizeMB: string; base64: string; fname: string } | null>(null);
 
   // Resizable frozen column widths
-  const [cw, setCw] = useState<ColWidths>({ num: 40, ch: 130, name: 260, code: 100 });
+  const [cw, setCw] = useState<ColWidths>({ num: 40, ch: 130, name: 260, code: 100, st: 80 });
   const cwRef = useRef(cw);
   cwRef.current = cw;
 
@@ -532,7 +538,7 @@ export default function VisitReportPage() {
 
   const downloadTemplate = useCallback((type: 'control' | 'data') => {
     const headers = type === 'control'
-      ? ['Channel', 'Store Name', 'Store Code']
+      ? ['Channel', 'Store Name', 'Store Code', 'Status']
       : ['Channel', 'Store Code', 'Store Full Name', 'Check In Date'];
     const blob = new Blob([headers.join(',') + '\n'], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -582,6 +588,7 @@ export default function VisitReportPage() {
           storeName: v.storeName || v.storeCode,
           storeCodes: [v.storeCode],
           channel: v.channel || 'Unknown',
+          status: 'ACTIVE',
         });
       }
     }
@@ -617,14 +624,22 @@ export default function VisitReportPage() {
     [storeGroups]
   );
 
+  const allStatuses = useMemo(
+    () => unique(storeGroups.map(g => g.status)),
+    [storeGroups]
+  );
+
   const filteredStoreLabels = useMemo(() => {
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
+    const stSet = selStatuses.length > 0 ? new Set(selStatuses) : null;
     const labels: string[] = [];
     for (const g of storeGroups) {
-      if (chSet.has(g.channel)) labels.push(`${g.storeName} (${g.storeCodes[0]})`);
+      if (!chSet.has(g.channel)) continue;
+      if (stSet && !stSet.has(g.status)) continue;
+      labels.push(`${g.storeName} (${g.storeCodes[0]})`);
     }
     return labels.sort();
-  }, [storeGroups, selChannels, allChannels]);
+  }, [storeGroups, selChannels, allChannels, selStatuses]);
 
   // Date columns
   const dateCols = useMemo(
@@ -643,17 +658,18 @@ export default function VisitReportPage() {
   const gridRows = useMemo((): GridRow[] => {
     if (!hasData || dateCols.length === 0) return [];
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
+    const statusSet = selStatuses.length > 0 ? new Set(selStatuses) : null;
     const stSet = selStores.length > 0 && selStores.length < filteredStoreLabels.length
       ? new Set(selStores) : null;
 
     const rows: GridRow[] = [];
     for (const g of storeGroups) {
       if (!chSet.has(g.channel)) continue;
+      if (statusSet && !statusSet.has(g.status)) continue;
       if (stSet && !stSet.has(`${g.storeName} (${g.storeCodes[0]})`)) continue;
       const visits: Record<string, boolean> = {};
       let visitCount = 0;
       for (const d of dateCols) {
-        // A visit counts if ANY code in the group was visited on that date
         const has = g.storeCodes.some(code => visitSet.has(`${code}|${d}`));
         visits[d] = has;
         if (has) visitCount++;
@@ -662,13 +678,14 @@ export default function VisitReportPage() {
         storeName: g.storeName,
         storeCode: g.storeCodes.join(' / '),
         channel: g.channel,
+        status: g.status,
         visits,
         visitCount,
       });
     }
     rows.sort((a, b) => a.channel.localeCompare(b.channel) || a.storeName.localeCompare(b.storeName));
     return rows;
-  }, [hasData, storeGroups, selChannels, selStores, allChannels, filteredStoreLabels.length, dateCols, visitSet]);
+  }, [hasData, storeGroups, selChannels, selStores, selStatuses, allChannels, filteredStoreLabels.length, dateCols, visitSet]);
 
   // Channel summary — base store count from deduplicated groups
   const channelSummary = useMemo(() => {
@@ -677,10 +694,13 @@ export default function VisitReportPage() {
     const channelMap = new Map<string, { baseStores: number; visits: number }>();
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
 
+    const statusSet = selStatuses.length > 0 ? new Set(selStatuses) : null;
+
     if (control) {
       // Base count from deduplicated groups (independent of store filter)
       for (const g of storeGroups) {
         if (!chSet.has(g.channel)) continue;
+        if (statusSet && !statusSet.has(g.status)) continue;
         const prev = channelMap.get(g.channel) ?? { baseStores: 0, visits: 0 };
         prev.baseStores++;
         channelMap.set(g.channel, prev);
@@ -713,7 +733,7 @@ export default function VisitReportPage() {
       ...rows,
       { channel: 'Total', totalStores: totalBase, visits: totalVisits, contribution: 100, completion: -1 },
     ];
-  }, [hasData, control, storeGroups, gridRows, dateCols, dateFrom, dateTo, selChannels, allChannels]);
+  }, [hasData, control, storeGroups, gridRows, dateCols, dateFrom, dateTo, selChannels, selStatuses, allChannels]);
 
   // ─── Week columns & week grid rows ─────────────────────────────────────────
 
@@ -774,12 +794,14 @@ export default function VisitReportPage() {
   const weekGridRows = useMemo(() => {
     if (!hasData || weekCols.length === 0) return [];
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
+    const statusSet = selStatuses.length > 0 ? new Set(selStatuses) : null;
     const stSet = selStores.length > 0 && selStores.length < filteredStoreLabels.length
       ? new Set(selStores) : null;
 
-    const rows: { storeName: string; storeCode: string; channel: string; weekVisits: Record<number, number>; total: number }[] = [];
+    const rows: { storeName: string; storeCode: string; channel: string; status: string; weekVisits: Record<number, number>; total: number }[] = [];
     for (const g of storeGroups) {
       if (!chSet.has(g.channel)) continue;
+      if (statusSet && !statusSet.has(g.status)) continue;
       if (stSet && !stSet.has(`${g.storeName} (${g.storeCodes[0]})`)) continue;
       // Aggregate week visits across all codes in the group
       const weekVisits: Record<number, number> = {};
@@ -793,11 +815,11 @@ export default function VisitReportPage() {
         weekVisits[wc.weekNum] = cnt;
         total += cnt;
       }
-      rows.push({ storeName: g.storeName, storeCode: g.storeCodes.join(' / '), channel: g.channel, weekVisits, total });
+      rows.push({ storeName: g.storeName, storeCode: g.storeCodes.join(' / '), channel: g.channel, status: g.status, weekVisits, total });
     }
     rows.sort((a, b) => a.channel.localeCompare(b.channel) || a.storeName.localeCompare(b.storeName));
     return rows;
-  }, [hasData, storeGroups, selChannels, selStores, allChannels, filteredStoreLabels.length, weekCols, weekVisitMap]);
+  }, [hasData, storeGroups, selChannels, selStores, selStatuses, allChannels, filteredStoreLabels.length, weekCols, weekVisitMap]);
 
   // ─── Build workbook (shared by download + email) ────────────────────────────
 
@@ -840,6 +862,7 @@ export default function VisitReportPage() {
         { header: 'Channel', key: 'channel', width: 18 },
         { header: 'Store Name', key: 'storeName', width: 40 },
         { header: 'Store Code', key: 'storeCode', width: 14 },
+        { header: 'Status', key: 'status', width: 10 },
         ...dateHeaders.map(h => ({ header: h, key: h, width: 12 })),
       ];
       ws.getRow(1).font = headerFont;
@@ -850,6 +873,7 @@ export default function VisitReportPage() {
           channel: row.channel,
           storeName: row.storeName,
           storeCode: row.storeCode,
+          status: row.status,
         };
         for (const d of dateCols) obj[fmtDate(d)] = row.visits[d] ? '\u2713' : '';
         ws.addRow(obj);
@@ -865,6 +889,7 @@ export default function VisitReportPage() {
         { header: 'Channel', key: 'channel', width: 18 },
         { header: 'Store Name', key: 'storeName', width: 40 },
         { header: 'Store Code', key: 'storeCode', width: 14 },
+        { header: 'Status', key: 'status', width: 10 },
         ...wkKeys.map(k => ({ header: k, key: k, width: 18 })),
         { header: 'Total', key: 'total', width: 8 },
       ];
@@ -876,6 +901,7 @@ export default function VisitReportPage() {
           channel: row.channel,
           storeName: row.storeName,
           storeCode: row.storeCode,
+          status: row.status,
         };
         for (const wc of weekCols) {
           const cnt = row.weekVisits[wc.weekNum] ?? 0;
@@ -888,7 +914,7 @@ export default function VisitReportPage() {
           xlRow.getCell(3).font = redFont;
           xlRow.getCell(3).fill = redFill;
           // Red font + fill on Total cell (last col)
-          const totalCol = 4 + weekCols.length + 1; // num,channel,storeName,storeCode + weeks + total
+          const totalCol = 5 + weekCols.length + 1; // num,channel,storeName,storeCode,status + weeks + total
           xlRow.getCell(totalCol).font = redFont;
           xlRow.getCell(totalCol).fill = redFill;
         }
@@ -1000,6 +1026,7 @@ export default function VisitReportPage() {
   const clearFilters = () => {
     setSelChannels([]);
     setSelStores([]);
+    setSelStatuses([]);
     setDateFrom(currentWeekMon());
     setDateTo(currentWeekSun());
   };
@@ -1127,7 +1154,7 @@ export default function VisitReportPage() {
                     <input type="file" accept=".xlsx,.xls" onChange={handleFileInput('control')} className="hidden" disabled={uploading !== null} />
                   </label>
                   <div className="flex items-center justify-center mt-2 gap-1">
-                    <p className="text-[10px] text-gray-400">Excel with columns: Channel, Store Name, Store Code</p>
+                    <p className="text-[10px] text-gray-400">Excel with columns: Channel, Store Name, Store Code, Status</p>
                     <button type="button" onClick={() => downloadTemplate('control')} className="text-[10px] text-[#1B3A6B] hover:underline font-medium">
                       Download Template
                     </button>
@@ -1208,6 +1235,9 @@ export default function VisitReportPage() {
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-5">
                   <div className="flex flex-wrap items-end gap-4">
                     <MultiSelect label="Channel" items={allChannels} selected={selChannels} onChange={setSelChannels} />
+                    {allStatuses.length > 1 && (
+                      <MultiSelect label="Status" items={allStatuses} selected={selStatuses} onChange={setSelStatuses} />
+                    )}
                     {filteredStoreLabels.length > 0 && (
                       <MultiSelect label="Store" items={filteredStoreLabels} selected={selStores} onChange={setSelStores} />
                     )}
@@ -1340,7 +1370,7 @@ export default function VisitReportPage() {
                     </p>
                   </div>
                   <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto', position: 'relative' }}>
-                    <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: `${cw.num + cw.ch + cw.name + cw.code + dateCols.length * 72}px` }}>
+                    <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: `${cw.num + cw.ch + cw.name + cw.code + cw.st + dateCols.length * 72}px` }}>
                       <thead className="sticky top-0" style={{ zIndex: 20 }}>
                         <tr>
                           {/* Frozen header cells */}
@@ -1360,6 +1390,10 @@ export default function VisitReportPage() {
                             Store Code
                             {resizeHandle('code')}
                           </th>
+                          <th className="px-3 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(4, cw, HEADER_BG, true)}>
+                            Status
+                            {resizeHandle('st')}
+                          </th>
                           {/* Scrollable date headers */}
                           {dateCols.map(d => (
                             <th key={d} className="px-2 py-2.5 text-center text-xs font-semibold whitespace-nowrap text-white"
@@ -1372,7 +1406,7 @@ export default function VisitReportPage() {
                       <tbody>
                         {gridRows.length === 0 ? (
                           <tr>
-                            <td colSpan={4 + dateCols.length} className="px-6 py-12 text-center text-gray-400">
+                            <td colSpan={5 + dateCols.length} className="px-6 py-12 text-center text-gray-400">
                               No stores match the current filters
                             </td>
                           </tr>
@@ -1385,6 +1419,11 @@ export default function VisitReportPage() {
                                 <td className="px-3 py-1.5 text-xs text-gray-600 whitespace-nowrap overflow-hidden text-ellipsis" style={frozenCell(1, cw, bg, false)}>{row.channel}</td>
                                 <td className="px-3 py-1.5 text-gray-800 font-medium overflow-hidden text-ellipsis" style={frozenCell(2, cw, bg, false)}>{row.storeName}</td>
                                 <td className="px-3 py-1.5 text-xs text-gray-600" style={frozenCell(3, cw, bg, false)}>{row.storeCode}</td>
+                                <td className="px-3 py-1.5 text-xs" style={frozenCell(4, cw, bg, false)}>
+                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${row.status === 'CLOSED' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                                    {row.status}
+                                  </span>
+                                </td>
                                 {dateCols.map(d => (
                                   <td key={d} className="px-2 py-1.5 text-center"
                                     style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: 72 }}>
@@ -1416,7 +1455,7 @@ export default function VisitReportPage() {
                       </p>
                     </div>
                     <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto', position: 'relative' }}>
-                      <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: `${cw.num + cw.ch + cw.name + cw.code + weekCols.length * 90 + 70}px` }}>
+                      <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: `${cw.num + cw.ch + cw.name + cw.code + cw.st + weekCols.length * 90 + 70}px` }}>
                         <thead className="sticky top-0" style={{ zIndex: 20 }}>
                           <tr>
                             <th className="px-2 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(0, cw, HEADER_BG, true)}>
@@ -1430,6 +1469,9 @@ export default function VisitReportPage() {
                             </th>
                             <th className="px-3 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(3, cw, HEADER_BG, true)}>
                               Store Code
+                            </th>
+                            <th className="px-3 py-2.5 text-left text-xs font-semibold text-white relative" style={frozenCell(4, cw, HEADER_BG, true)}>
+                              Status
                             </th>
                             {weekCols.map(wc => (
                               <th key={wc.weekNum} className="px-2 py-1.5 text-center text-xs font-semibold text-white whitespace-nowrap"
@@ -1454,6 +1496,11 @@ export default function VisitReportPage() {
                                 <td className="px-3 py-1.5 text-xs text-gray-600 whitespace-nowrap overflow-hidden text-ellipsis" style={frozenCell(1, cw, bg, false)}>{row.channel}</td>
                                 <td className="px-3 py-1.5 font-medium overflow-hidden text-ellipsis" style={{ ...frozenCell(2, cw, bg, false), ...(isZero ? { color: '#dc2626', fontWeight: 700 } : { color: '#1f2937' }) }}>{row.storeName}</td>
                                 <td className="px-3 py-1.5 text-xs text-gray-600" style={frozenCell(3, cw, bg, false)}>{row.storeCode}</td>
+                                <td className="px-3 py-1.5 text-xs" style={frozenCell(4, cw, bg, false)}>
+                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${row.status === 'CLOSED' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                                    {row.status}
+                                  </span>
+                                </td>
                                 {weekCols.map(wc => {
                                   const cnt = row.weekVisits[wc.weekNum] ?? 0;
                                   return (

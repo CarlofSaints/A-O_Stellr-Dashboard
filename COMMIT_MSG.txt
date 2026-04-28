@@ -1,0 +1,7 @@
+Show Form Name filter before channel selection
+
+Form types derived from index (not loaded data) so dropdown appears
+immediately. Channels without data for the selected form type are
+grayed out even before any channel is selected.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>

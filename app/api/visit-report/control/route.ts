@@ -10,6 +10,7 @@ interface Store {
   storeName: string;
   storeCode: string;
   channel: string;
+  status: string; // ACTIVE or CLOSED
 }
 
 interface ControlPayload {
@@ -76,6 +77,7 @@ export async function POST(req: NextRequest) {
     const storeNameCol = headers.find(h => /store\s*name/i.test(h));
     const storeCodeCol = headers.find(h => /store\s*code/i.test(h));
     const channelCol = headers.find(h => /channel/i.test(h));
+    const statusCol = headers.find(h => /^status$/i.test(h));
 
     if (!storeNameCol || !storeCodeCol || !channelCol) {
       return NextResponse.json(
@@ -85,11 +87,15 @@ export async function POST(req: NextRequest) {
     }
 
     const stores: Store[] = rows
-      .map(r => ({
-        storeName: String(r[storeNameCol] ?? '').trim(),
-        storeCode: String(r[storeCodeCol] ?? '').trim(),
-        channel: String(r[channelCol] ?? '').trim(),
-      }))
+      .map(r => {
+        const rawStatus = statusCol ? String(r[statusCol] ?? '').trim().toUpperCase() : 'ACTIVE';
+        return {
+          storeName: String(r[storeNameCol] ?? '').trim(),
+          storeCode: String(r[storeCodeCol] ?? '').trim(),
+          channel: String(r[channelCol] ?? '').trim(),
+          status: rawStatus === 'CLOSED' ? 'CLOSED' : 'ACTIVE',
+        };
+      })
       .filter(s => s.storeCode && s.channel);
 
     const payload: ControlPayload = {
