@@ -98,18 +98,13 @@ function isoDate(d: Date): string {
   return `${yy}-${mm}-${dd}`;
 }
 
-function currentWeekMon(): string {
+function firstOfMonth(): string {
   const d = new Date();
-  const day = d.getDay();
-  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
-  return isoDate(d);
+  return isoDate(new Date(d.getFullYear(), d.getMonth(), 1));
 }
 
-function currentWeekSun(): string {
-  const d = new Date();
-  const day = d.getDay();
-  d.setDate(d.getDate() + (day === 0 ? 0 : 7 - day));
-  return isoDate(d);
+function today(): string {
+  return isoDate(new Date());
 }
 
 function weeksInRange(from: string, to: string): number {
@@ -394,8 +389,8 @@ export default function VisitReportPage() {
   const [selChannels, setSelChannels] = useState<string[]>([]);
   const [selStores, setSelStores] = useState<string[]>([]);
   const [selStatuses, setSelStatuses] = useState<string[]>([]);
-  const [dateFrom, setDateFrom] = useState(currentWeekMon);
-  const [dateTo, setDateTo] = useState(currentWeekSun);
+  const [dateFrom, setDateFrom] = useState(firstOfMonth);
+  const [dateTo, setDateTo] = useState(today);
 
   // Track whether we've applied the initial status default
   const statusDefaultApplied = useRef(false);
@@ -1038,8 +1033,8 @@ export default function VisitReportPage() {
     setSelChannels([]);
     setSelStores([]);
     setSelStatuses([]);
-    setDateFrom(currentWeekMon());
-    setDateTo(currentWeekSun());
+    setDateFrom(firstOfMonth());
+    setDateTo(today());
   };
 
   // ─── Row background helper (opaque for frozen cols) ────────────────────────
