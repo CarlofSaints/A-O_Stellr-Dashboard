@@ -338,6 +338,8 @@ function MultiSelect({
 const GRID_BORDER = '1px solid #e5e7eb'; // gray-200
 
 type ColWidths = { num: number; ch: number; name: number; code: number; st: number };
+type CsWidths = { ch: number; stores: number; visits: number; compl: number; contrib: number };
+type ExWidths = { num: number; ch: number; code: number; name: number; uuid: number; date: number };
 
 function frozenOffsets(cw: ColWidths) {
   return [0, cw.num, cw.num + cw.ch, cw.num + cw.ch + cw.name, cw.num + cw.ch + cw.name + cw.code];
@@ -410,6 +412,12 @@ export default function VisitReportPage() {
   const cwRef = useRef(cw);
   cwRef.current = cw;
 
+  // Channel Summary column widths
+  const [csCw, setCsCw] = useState<CsWidths>({ ch: 180, stores: 160, visits: 150, compl: 130, contrib: 130 });
+
+  // Exceptions column widths
+  const [exCw, setExCw] = useState<ExWidths>({ num: 40, ch: 150, code: 120, name: 280, uuid: 300, date: 100 });
+
   // Auth check
   useEffect(() => {
     const raw = localStorage.getItem('ao_session');
@@ -466,6 +474,24 @@ export default function VisitReportPage() {
       document.body.style.userSelect = '';
     };
 
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, []);
+
+  // Generic column resize — pass the current width and a setter
+  const startGenericResize = useCallback((startW: number, apply: (w: number) => void, min: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const onMove = (ev: MouseEvent) => apply(Math.max(min, startW + ev.clientX - startX));
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMove);
@@ -1056,6 +1082,14 @@ export default function VisitReportPage() {
     />
   );
 
+  const genericHandle = (w: number, apply: (v: number) => void, min = 60) => (
+    <div
+      onMouseDown={(e) => startGenericResize(w, apply, min, e)}
+      className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-white/30"
+      style={{ zIndex: 31 }}
+    />
+  );
+
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -1333,14 +1367,29 @@ export default function VisitReportPage() {
                       )}
                     </div>
                     <div className="overflow-x-auto">
-                      <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+                      <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: csCw.ch + csCw.stores + csCw.visits + csCw.compl + csCw.contrib }}>
                         <thead>
                           <tr style={{ backgroundColor: HEADER_BG, color: '#fff' }}>
-                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Channel</th>
-                            <th className="px-4 py-2.5 text-right text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Total Stores (Base)</th>
-                            <th className="px-4 py-2.5 text-right text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Visits in Period</th>
-                            <th className="px-4 py-2.5 text-right text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Completion %</th>
-                            <th className="px-4 py-2.5 text-right text-xs font-semibold" style={{ borderBottom: GRID_BORDER }}>Contribution %</th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold relative" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: csCw.ch, width: csCw.ch }}>
+                              Channel
+                              {genericHandle(csCw.ch, w => setCsCw(p => ({ ...p, ch: w })))}
+                            </th>
+                            <th className="px-4 py-2.5 text-center text-xs font-semibold relative" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: csCw.stores, width: csCw.stores }}>
+                              Total Stores (Base)
+                              {genericHandle(csCw.stores, w => setCsCw(p => ({ ...p, stores: w })))}
+                            </th>
+                            <th className="px-4 py-2.5 text-center text-xs font-semibold relative" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: csCw.visits, width: csCw.visits }}>
+                              Visits in Period
+                              {genericHandle(csCw.visits, w => setCsCw(p => ({ ...p, visits: w })))}
+                            </th>
+                            <th className="px-4 py-2.5 text-center text-xs font-semibold relative" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: csCw.compl, width: csCw.compl }}>
+                              Completion %
+                              {genericHandle(csCw.compl, w => setCsCw(p => ({ ...p, compl: w })))}
+                            </th>
+                            <th className="px-4 py-2.5 text-center text-xs font-semibold relative" style={{ borderBottom: GRID_BORDER, minWidth: csCw.contrib, width: csCw.contrib }}>
+                              Contribution %
+                              {genericHandle(csCw.contrib, w => setCsCw(p => ({ ...p, contrib: w })))}
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1349,13 +1398,13 @@ export default function VisitReportPage() {
                             const bg = isTotal ? '#f9fafb' : idx % 2 === 0 ? '#ffffff' : '#f9fafb';
                             return (
                               <tr key={row.channel} style={{ backgroundColor: bg, fontWeight: isTotal ? 700 : 400 }}>
-                                <td className="px-4 py-2 text-gray-800" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{row.channel}</td>
-                                <td className="px-4 py-2 text-right text-gray-700" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{row.totalStores}</td>
-                                <td className="px-4 py-2 text-right text-gray-700" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{row.visits}</td>
-                                <td className="px-4 py-2 text-right font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, ...completionStyle(row.completion) }}>
+                                <td className="px-4 py-2 text-gray-800" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: csCw.ch }}>{row.channel}</td>
+                                <td className="px-4 py-2 text-center text-gray-700" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: csCw.stores }}>{row.totalStores}</td>
+                                <td className="px-4 py-2 text-center text-gray-700" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: csCw.visits }}>{row.visits}</td>
+                                <td className="px-4 py-2 text-center font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: csCw.compl, ...completionStyle(row.completion) }}>
                                   {row.completion < 0 ? '—' : `${row.completion.toFixed(1)}%`}
                                 </td>
-                                <td className="px-4 py-2 text-right text-gray-700" style={{ borderBottom: GRID_BORDER }}>{row.contribution.toFixed(1)}%</td>
+                                <td className="px-4 py-2 text-center text-gray-700" style={{ borderBottom: GRID_BORDER, minWidth: csCw.contrib }}>{row.contribution.toFixed(1)}%</td>
                               </tr>
                             );
                           })}
@@ -1545,15 +1594,33 @@ export default function VisitReportPage() {
                       </p>
                     </div>
                     <div style={{ overflowX: 'auto', maxHeight: '50vh', overflowY: 'auto' }}>
-                      <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+                      <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: exCw.num + exCw.ch + exCw.code + exCw.name + exCw.uuid + exCw.date }}>
                         <thead className="sticky top-0" style={{ zIndex: 20 }}>
                           <tr style={{ backgroundColor: '#92400e', color: '#fff' }}>
-                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>#</th>
-                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Channel</th>
-                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Site Code</th>
-                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Store Name</th>
-                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>Visit UUID</th>
-                            <th className="px-4 py-2.5 text-left text-xs font-semibold" style={{ borderBottom: GRID_BORDER }}>Date</th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold relative" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.num, width: exCw.num }}>
+                              #
+                              {genericHandle(exCw.num, w => setExCw(p => ({ ...p, num: w })), 30)}
+                            </th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold relative" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.ch, width: exCw.ch }}>
+                              Channel
+                              {genericHandle(exCw.ch, w => setExCw(p => ({ ...p, ch: w })))}
+                            </th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold relative" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.code, width: exCw.code }}>
+                              Site Code
+                              {genericHandle(exCw.code, w => setExCw(p => ({ ...p, code: w })))}
+                            </th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold relative" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.name, width: exCw.name }}>
+                              Store Name
+                              {genericHandle(exCw.name, w => setExCw(p => ({ ...p, name: w })))}
+                            </th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold relative" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.uuid, width: exCw.uuid }}>
+                              Visit UUID
+                              {genericHandle(exCw.uuid, w => setExCw(p => ({ ...p, uuid: w })))}
+                            </th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold relative" style={{ borderBottom: GRID_BORDER, minWidth: exCw.date, width: exCw.date }}>
+                              Date
+                              {genericHandle(exCw.date, w => setExCw(p => ({ ...p, date: w })))}
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1561,12 +1628,12 @@ export default function VisitReportPage() {
                             const bg = idx % 2 === 0 ? '#ffffff' : '#fffbeb';
                             return (
                               <tr key={`ex-${idx}`}>
-                                <td className="px-4 py-1.5 text-xs text-gray-400" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{idx + 1}</td>
-                                <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{ex.channel}</td>
-                                <td className="px-4 py-1.5 text-xs text-gray-700 font-mono" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{ex.storeCode}</td>
-                                <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{ex.storeName}</td>
-                                <td className="px-4 py-1.5 text-xs text-gray-500 font-mono" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER }}>{ex.visitUuid}</td>
-                                <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderBottom: GRID_BORDER }}>{ex.date}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-400" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.num }}>{idx + 1}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.ch }}>{ex.channel}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-700 font-mono" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.code }}>{ex.storeCode}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.name }}>{ex.storeName}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-500 font-mono" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.uuid }}>{ex.visitUuid}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderBottom: GRID_BORDER, minWidth: exCw.date }}>{ex.date}</td>
                               </tr>
                             );
                           })}
