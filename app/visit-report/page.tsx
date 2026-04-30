@@ -397,6 +397,9 @@ export default function VisitReportPage() {
   const [dateFrom, setDateFrom] = useState(currentWeekMon);
   const [dateTo, setDateTo] = useState(currentWeekSun);
 
+  // Track whether we've applied the initial status default
+  const statusDefaultApplied = useRef(false);
+
   // Drag-drop highlight
   const [dragOver, setDragOver] = useState<'control' | 'data' | null>(null);
 
@@ -628,6 +631,14 @@ export default function VisitReportPage() {
     () => unique(storeGroups.map(g => g.status)),
     [storeGroups]
   );
+
+  // Default to showing only ACTIVE stores when multiple statuses exist
+  useEffect(() => {
+    if (!statusDefaultApplied.current && allStatuses.length > 1 && allStatuses.includes('ACTIVE')) {
+      setSelStatuses(['ACTIVE']);
+      statusDefaultApplied.current = true;
+    }
+  }, [allStatuses]);
 
   const filteredStoreLabels = useMemo(() => {
     const chSet = selChannels.length > 0 ? new Set(selChannels) : new Set(allChannels);
