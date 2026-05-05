@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@vercel/blob": "^2.3.3",
     "bcryptjs": "^3.0.3",
     "exceljs": "^4.4.0",
     "mssql": "^12.2.0",
