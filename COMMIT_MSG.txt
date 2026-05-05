@@ -1,6 +1,5 @@
-Wire Perigee import to SharePoint visit report store
+Fix Perigee import: extract store code from name suffix, not GUID
 
-Import now maps Perigee visits to Visit model (storeCode, storeName,
-channel, date, visitUuid), deduplicates (within-batch by GUID +
-cross-batch by UUID and storeCode|date), and saves to SharePoint
-visit-report-data.json alongside manually uploaded data.
+storesGuid/storeGuid are GUIDs (e.g. 41381EB2-...) which don't
+match control file store codes (e.g. S026). Now parses the actual
+store code from the store name suffix pattern "STORE NAME - CODE".
