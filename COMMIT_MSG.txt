@@ -1,7 +1,6 @@
-Show Form Name filter before channel selection
+Wire Perigee import to SharePoint visit report store
 
-Form types derived from index (not loaded data) so dropdown appears
-immediately. Channels without data for the selected form type are
-grayed out even before any channel is selected.
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Import now maps Perigee visits to Visit model (storeCode, storeName,
+channel, date, visitUuid), deduplicates (within-batch by GUID +
+cross-batch by UUID and storeCode|date), and saves to SharePoint
+visit-report-data.json alongside manually uploaded data.
