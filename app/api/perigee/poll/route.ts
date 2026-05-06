@@ -54,15 +54,8 @@ function mapPerigeeVisit(row: Record<string, unknown>): Visit {
 
   // Store name and code
   const rawStore = str('store') || str('Store Full Name') || str('storeName') || str('place') || '';
-  let storeName = rawStore;
-  let storeCode = str('storeCode') || ''; // Only use explicit storeCode field, NOT GUIDs
-
-  // Parse store code from name suffix: "STORE NAME - CODE - CODE" or "STORE NAME - CODE"
-  if (!storeCode && rawStore.includes(' - ')) {
-    const lastDash = rawStore.lastIndexOf(' - ');
-    storeName = rawStore.substring(0, lastDash).trim();
-    storeCode = rawStore.substring(lastDash + 3).trim();
-  }
+  const storeName = rawStore;
+  const storeCode = str('Store Code') || str('storeCode') || '';
 
   // Channel
   const channel = str('channel') || str('Channel') || '';
