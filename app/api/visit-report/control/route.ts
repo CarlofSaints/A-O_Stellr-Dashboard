@@ -136,15 +136,27 @@ export async function PATCH(req: NextRequest) {
     const channelCol = headers.find(h => /channel/i.test(h)) ?? 'Channel';
     const statusCol = headers.find(h => /^status$/i.test(h)) ?? 'Status';
 
-    // Add new row — match the Excel column order (A=Channel, B=Store Name, C=Store Code, D=Status)
+    // Find actual last used row (don't trust !ref which may include empty trailing rows)
     const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1');
-    const newRowNum = range.e.r + 1;
+    let lastUsedRow = 0;
+    for (let r = range.e.r; r >= 0; r--) {
+      let hasData = false;
+      for (let c = 0; c <= 3; c++) {
+        const cell = ws[XLSX.utils.encode_cell({ r, c })];
+        if (cell && cell.v !== undefined && cell.v !== '') { hasData = true; break; }
+      }
+      if (hasData) { lastUsedRow = r; break; }
+    }
+    // Add new row right after the last used row
+    const newRowNum = lastUsedRow + 1;
     ws[XLSX.utils.encode_cell({ r: newRowNum, c: 0 })] = { t: 's', v: channel.trim() };
     ws[XLSX.utils.encode_cell({ r: newRowNum, c: 1 })] = { t: 's', v: storeName.trim() };
     ws[XLSX.utils.encode_cell({ r: newRowNum, c: 2 })] = { t: 's', v: storeCode.trim() };
     ws[XLSX.utils.encode_cell({ r: newRowNum, c: 3 })] = { t: 's', v: normStatus };
-    range.e.r = newRowNum;
-    ws['!ref'] = XLSX.utils.encode_range(range);
+    if (newRowNum > range.e.r) {
+      range.e.r = newRowNum;
+      ws['!ref'] = XLSX.utils.encode_range(range);
+    }
 
     // Write back to SharePoint
     const outArr = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;

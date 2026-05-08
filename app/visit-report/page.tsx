@@ -1694,7 +1694,7 @@ export default function VisitReportPage() {
                                         +
                                       </button>
                                       {isDropdownOpen && (
-                                        <div className="absolute right-0 top-full mt-1 z-40 bg-white border border-gray-200 rounded-lg shadow-xl py-1 min-w-[130px]">
+                                        <div className="absolute right-0 bottom-full mb-1 z-40 bg-white border border-gray-200 rounded-lg shadow-xl py-1 min-w-[130px]">
                                           {(['ACTIVE', 'CLOSED', 'NOT IN CYCLE'] as const).map(st => (
                                             <button
                                               key={st}
