@@ -136,14 +136,15 @@ export async function PATCH(req: NextRequest) {
     const channelCol = headers.find(h => /channel/i.test(h)) ?? 'Channel';
     const statusCol = headers.find(h => /^status$/i.test(h)) ?? 'Status';
 
-    // Add new row
-    const newRow: Record<string, string> = {
-      [storeNameCol]: storeName.trim(),
-      [storeCodeCol]: storeCode.trim(),
-      [channelCol]: channel.trim(),
-      [statusCol]: normStatus,
-    };
-    XLSX.utils.sheet_add_json(ws, [newRow], { skipHeader: true, origin: -1 });
+    // Add new row — match the Excel column order (A=Channel, B=Store Name, C=Store Code, D=Status)
+    const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1');
+    const newRowNum = range.e.r + 1;
+    ws[XLSX.utils.encode_cell({ r: newRowNum, c: 0 })] = { t: 's', v: channel.trim() };
+    ws[XLSX.utils.encode_cell({ r: newRowNum, c: 1 })] = { t: 's', v: storeName.trim() };
+    ws[XLSX.utils.encode_cell({ r: newRowNum, c: 2 })] = { t: 's', v: storeCode.trim() };
+    ws[XLSX.utils.encode_cell({ r: newRowNum, c: 3 })] = { t: 's', v: normStatus };
+    range.e.r = newRowNum;
+    ws['!ref'] = XLSX.utils.encode_range(range);
 
     // Write back to SharePoint
     const outBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
