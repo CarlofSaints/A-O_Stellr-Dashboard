@@ -6,11 +6,14 @@ export const dynamic = 'force-dynamic';
 
 const NO_CACHE = { 'Cache-Control': 'no-store, no-cache, must-revalidate' };
 
+const VALID_STATUSES = ['ACTIVE', 'CLOSED', 'NOT IN CYCLE'] as const;
+type StoreStatus = (typeof VALID_STATUSES)[number];
+
 interface Store {
   storeName: string;
   storeCode: string;
   channel: string;
-  status: string; // ACTIVE or CLOSED
+  status: string; // ACTIVE, CLOSED, or NOT IN CYCLE
 }
 
 interface ControlPayload {
@@ -29,27 +32,136 @@ function controlFilePath(): string {
   return `${getBasePath()}/visit-report-control.json`;
 }
 
-async function fetchJson<T>(path: string): Promise<T | null> {
-  try {
-    const buf = await fetchSpFile(path);
-    return JSON.parse(Buffer.from(buf).toString('utf-8')) as T;
-  } catch {
-    return null;
-  }
+/** Path to the master Excel control file in SP */
+function controlExcelPath(): string {
+  const imagesBase = (process.env.AO_SP_IMAGES_BASE_PATH ?? '').replace(/\/$/, '');
+  if (!imagesBase) throw new Error('AO_SP_IMAGES_BASE_PATH not configured');
+  // Find "2. EXTERNAL SYNC" segment, then append CONTROL FILES/...
+  const idx = imagesBase.indexOf('2. EXTERNAL SYNC');
+  if (idx === -1) throw new Error('Could not find "2. EXTERNAL SYNC" in AO_SP_IMAGES_BASE_PATH');
+  const syncRoot = imagesBase.substring(0, idx + '2. EXTERNAL SYNC'.length);
+  return `${syncRoot}/CONTROL FILES/Store Control File- Stellr v3.xlsx`;
 }
 
-// GET — return the current control file
+function normaliseStatus(raw: string): StoreStatus {
+  const s = raw.trim().toUpperCase();
+  if (s === 'CLOSED') return 'CLOSED';
+  if (s === 'NOT IN CYCLE') return 'NOT IN CYCLE';
+  return 'ACTIVE';
+}
+
+/** Parse an Excel buffer into Store[] */
+function parseExcelToStores(buf: ArrayBuffer): Store[] {
+  const wb = XLSX.read(buf, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  if (!ws) return [];
+
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' });
+  if (rows.length === 0) return [];
+
+  const headers = Object.keys(rows[0]);
+  const storeNameCol = headers.find(h => /store\s*name/i.test(h));
+  const storeCodeCol = headers.find(h => /store\s*code/i.test(h));
+  const channelCol = headers.find(h => /channel/i.test(h));
+  const statusCol = headers.find(h => /^status$/i.test(h));
+
+  if (!storeNameCol || !storeCodeCol || !channelCol) return [];
+
+  return rows
+    .map(r => ({
+      storeName: String(r[storeNameCol] ?? '').trim(),
+      storeCode: String(r[storeCodeCol] ?? '').trim(),
+      channel: String(r[channelCol] ?? '').trim(),
+      status: normaliseStatus(statusCol ? String(r[statusCol] ?? '') : 'ACTIVE'),
+    }))
+    .filter(s => s.storeCode && s.channel);
+}
+
+// GET — read directly from the SharePoint Excel control file
 export async function GET() {
   try {
-    const data = await fetchJson<ControlPayload>(controlFilePath());
-    return NextResponse.json(data, { headers: NO_CACHE });
+    const buf = await fetchSpFile(controlExcelPath());
+    const stores = parseExcelToStores(buf);
+
+    const payload: ControlPayload = {
+      updatedAt: new Date().toISOString(),
+      updatedBy: 'SharePoint Excel',
+      stores,
+    };
+    return NextResponse.json(payload, { headers: NO_CACHE });
   } catch (err) {
     console.error('Visit report control GET error:', err);
-    return NextResponse.json(null, { headers: NO_CACHE });
+    // Fallback: try the legacy JSON file
+    try {
+      const buf = await fetchSpFile(controlFilePath());
+      const data = JSON.parse(Buffer.from(buf).toString('utf-8')) as ControlPayload;
+      return NextResponse.json(data, { headers: NO_CACHE });
+    } catch {
+      return NextResponse.json(null, { headers: NO_CACHE });
+    }
   }
 }
 
-// POST — upload new control file (replace mode)
+// PATCH — add a single store to the Excel control file
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { storeName, storeCode, channel, status } = body as {
+      storeName?: string; storeCode?: string; channel?: string; status?: string;
+    };
+
+    if (!storeName || !storeCode || !channel || !status) {
+      return NextResponse.json(
+        { error: 'storeName, storeCode, channel, and status are required' },
+        { status: 400 },
+      );
+    }
+
+    const normStatus = normaliseStatus(status);
+
+    // Fetch current Excel
+    const excelPath = controlExcelPath();
+    const buf = await fetchSpFile(excelPath);
+    const wb = XLSX.read(buf, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    if (!ws) {
+      return NextResponse.json({ error: 'Control Excel has no sheets' }, { status: 500 });
+    }
+
+    // Determine header columns
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' });
+    const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
+    const storeNameCol = headers.find(h => /store\s*name/i.test(h)) ?? 'Store Name';
+    const storeCodeCol = headers.find(h => /store\s*code/i.test(h)) ?? 'Store Code';
+    const channelCol = headers.find(h => /channel/i.test(h)) ?? 'Channel';
+    const statusCol = headers.find(h => /^status$/i.test(h)) ?? 'Status';
+
+    // Add new row
+    const newRow: Record<string, string> = {
+      [storeNameCol]: storeName.trim(),
+      [storeCodeCol]: storeCode.trim(),
+      [channelCol]: channel.trim(),
+      [statusCol]: normStatus,
+    };
+    XLSX.utils.sheet_add_json(ws, [newRow], { skipHeader: true, origin: -1 });
+
+    // Write back to SharePoint
+    const outBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    await uploadSpFile(
+      excelPath,
+      outBuf,
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+
+    const allStores = parseExcelToStores(outBuf);
+    return NextResponse.json({ ok: true, storeCount: allStores.length });
+  } catch (err) {
+    console.error('Visit report control PATCH error:', err);
+    return NextResponse.json({ error: 'Add store failed' }, { status: 500 });
+  }
+}
+
+// POST — upload new control file (bulk replace — admin fallback)
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
@@ -87,15 +199,12 @@ export async function POST(req: NextRequest) {
     }
 
     const stores: Store[] = rows
-      .map(r => {
-        const rawStatus = statusCol ? String(r[statusCol] ?? '').trim().toUpperCase() : 'ACTIVE';
-        return {
-          storeName: String(r[storeNameCol] ?? '').trim(),
-          storeCode: String(r[storeCodeCol] ?? '').trim(),
-          channel: String(r[channelCol] ?? '').trim(),
-          status: rawStatus === 'CLOSED' ? 'CLOSED' : 'ACTIVE',
-        };
-      })
+      .map(r => ({
+        storeName: String(r[storeNameCol] ?? '').trim(),
+        storeCode: String(r[storeCodeCol] ?? '').trim(),
+        channel: String(r[channelCol] ?? '').trim(),
+        status: normaliseStatus(statusCol ? String(r[statusCol] ?? '') : 'ACTIVE'),
+      }))
       .filter(s => s.storeCode && s.channel);
 
     const payload: ControlPayload = {

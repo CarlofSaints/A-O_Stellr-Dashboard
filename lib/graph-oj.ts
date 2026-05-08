@@ -90,7 +90,7 @@ export async function fetchSpFile(filePath: string): Promise<ArrayBuffer> {
 /**
  * Upload content to a SharePoint file path, creating or overwriting it.
  */
-export async function uploadSpFile(filePath: string, content: string, contentType = 'application/json'): Promise<void> {
+export async function uploadSpFile(filePath: string, content: string | Buffer | Uint8Array, contentType = 'application/json'): Promise<void> {
   const token = await getAccessToken();
   const driveId = await getDriveId(token);
 

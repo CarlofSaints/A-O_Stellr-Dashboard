@@ -19,7 +19,7 @@ interface CtrlStore {
   storeName: string;
   storeCode: string;
   channel: string;
-  status?: string; // ACTIVE or CLOSED
+  status?: string; // ACTIVE, CLOSED, or NOT IN CYCLE
 }
 
 interface ControlPayload {
@@ -199,8 +199,9 @@ function deduplicateStores(stores: CtrlStore[]): StoreGroup[] {
     for (const indices of groups.values()) {
       const codes = [...new Set(indices.map(i => entries[i].storeCode))];
       const name = entries[indices[0]].storeName;
-      // If any entry in the group is CLOSED, the group is CLOSED
-      const status = indices.some(i => (entries[i].status ?? 'ACTIVE') === 'CLOSED') ? 'CLOSED' : 'ACTIVE';
+      // Priority: CLOSED > NOT IN CYCLE > ACTIVE
+      const statuses = indices.map(i => (entries[i].status ?? 'ACTIVE').toUpperCase());
+      const status = statuses.includes('CLOSED') ? 'CLOSED' : statuses.includes('NOT IN CYCLE') ? 'NOT IN CYCLE' : 'ACTIVE';
       result.push({ storeName: name, storeCodes: codes, channel, status });
     }
   }
@@ -339,7 +340,7 @@ const GRID_BORDER = '1px solid #e5e7eb'; // gray-200
 
 type ColWidths = { num: number; ch: number; name: number; code: number; st: number };
 type CsWidths = { ch: number; stores: number; visits: number; compl: number; contrib: number };
-type ExWidths = { num: number; ch: number; code: number; name: number; uuid: number; date: number };
+type ExWidths = { num: number; ch: number; code: number; name: number; uuid: number; date: number; action: number };
 
 function frozenOffsets(cw: ColWidths) {
   return [0, cw.num, cw.num + cw.ch, cw.num + cw.ch + cw.name, cw.num + cw.ch + cw.name + cw.code];
@@ -416,7 +417,41 @@ export default function VisitReportPage() {
   const [csCw, setCsCw] = useState<CsWidths>({ ch: 180, stores: 160, visits: 150, compl: 130, contrib: 130 });
 
   // Exceptions column widths
-  const [exCw, setExCw] = useState<ExWidths>({ num: 40, ch: 150, code: 120, name: 280, uuid: 300, date: 100 });
+  const [exCw, setExCw] = useState<ExWidths>({ num: 40, ch: 150, code: 120, name: 280, uuid: 300, date: 100, action: 120 });
+
+  // Add-to-control state (exception rows)
+  const [addingStore, setAddingStore] = useState<string | null>(null); // storeCode currently saving
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null); // storeCode with dropdown open
+
+  const addToControl = useCallback(async (storeName: string, storeCode: string, channel: string, status: string) => {
+    setOpenDropdown(null);
+    setAddingStore(storeCode);
+    try {
+      const res = await fetch('/api/visit-report/control', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeName, storeCode, channel, status }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        setUploadError(data.error ?? 'Failed to add store');
+        return;
+      }
+      await loadData();
+    } catch {
+      setUploadError('Failed to add store — network error');
+    } finally {
+      setAddingStore(null);
+    }
+  }, [loadData]);
+
+  // Close add-to-control dropdown on outside click
+  useEffect(() => {
+    if (!openDropdown) return;
+    const handler = () => setOpenDropdown(null);
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [openDropdown]);
 
   // Auth check
   useEffect(() => {
@@ -1594,7 +1629,7 @@ export default function VisitReportPage() {
                       </p>
                     </div>
                     <div style={{ overflowX: 'auto', maxHeight: '50vh', overflowY: 'auto' }}>
-                      <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: exCw.num + exCw.ch + exCw.code + exCw.name + exCw.uuid + exCw.date }}>
+                      <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: exCw.num + exCw.ch + exCw.code + exCw.name + exCw.uuid + exCw.date + exCw.action }}>
                         <thead className="sticky top-0" style={{ zIndex: 20 }}>
                           <tr style={{ backgroundColor: '#92400e', color: '#fff' }}>
                             <th className="px-4 py-2.5 text-left text-xs font-semibold relative" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.num, width: exCw.num }}>
@@ -1617,15 +1652,20 @@ export default function VisitReportPage() {
                               Visit UUID
                               {genericHandle(exCw.uuid, w => setExCw(p => ({ ...p, uuid: w })))}
                             </th>
-                            <th className="px-4 py-2.5 text-left text-xs font-semibold relative" style={{ borderBottom: GRID_BORDER, minWidth: exCw.date, width: exCw.date }}>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold relative" style={{ borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.date, width: exCw.date }}>
                               Date
                               {genericHandle(exCw.date, w => setExCw(p => ({ ...p, date: w })))}
+                            </th>
+                            <th className="px-4 py-2.5 text-center text-xs font-semibold" style={{ borderBottom: GRID_BORDER, minWidth: exCw.action, width: exCw.action }}>
+                              Action
                             </th>
                           </tr>
                         </thead>
                         <tbody>
                           {filteredExceptions.map((ex, idx) => {
                             const bg = idx % 2 === 0 ? '#ffffff' : '#fffbeb';
+                            const isSaving = addingStore === ex.storeCode;
+                            const isDropdownOpen = openDropdown === ex.storeCode;
                             return (
                               <tr key={`ex-${idx}`}>
                                 <td className="px-4 py-1.5 text-xs text-gray-400" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.num }}>{idx + 1}</td>
@@ -1633,7 +1673,37 @@ export default function VisitReportPage() {
                                 <td className="px-4 py-1.5 text-xs text-gray-700 font-mono" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.code }}>{ex.storeCode}</td>
                                 <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.name }}>{ex.storeName}</td>
                                 <td className="px-4 py-1.5 text-xs text-gray-500 font-mono" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.uuid }}>{ex.visitUuid}</td>
-                                <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderBottom: GRID_BORDER, minWidth: exCw.date }}>{ex.date}</td>
+                                <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.date }}>{ex.date}</td>
+                                <td className="px-2 py-1.5 text-center" style={{ backgroundColor: bg, borderBottom: GRID_BORDER, minWidth: exCw.action, position: 'relative' }}>
+                                  {isSaving ? (
+                                    <span className="inline-block w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                                  ) : (
+                                    <div className="relative inline-block" onMouseDown={e => e.stopPropagation()}>
+                                      <button
+                                        type="button"
+                                        onClick={() => setOpenDropdown(isDropdownOpen ? null : ex.storeCode)}
+                                        className="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors text-xs font-bold"
+                                        title="Add to Control File"
+                                      >
+                                        +
+                                      </button>
+                                      {isDropdownOpen && (
+                                        <div className="absolute right-0 top-full mt-1 z-40 bg-white border border-gray-200 rounded-lg shadow-xl py-1 min-w-[130px]">
+                                          {(['ACTIVE', 'CLOSED', 'NOT IN CYCLE'] as const).map(st => (
+                                            <button
+                                              key={st}
+                                              type="button"
+                                              onClick={() => addToControl(ex.storeName, ex.storeCode, ex.channel, st)}
+                                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 text-gray-700"
+                                            >
+                                              {st}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
                               </tr>
                             );
                           })}
