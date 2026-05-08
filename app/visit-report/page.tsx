@@ -419,9 +419,10 @@ export default function VisitReportPage() {
   // Exceptions column widths
   const [exCw, setExCw] = useState<ExWidths>({ num: 40, ch: 150, code: 120, name: 280, uuid: 300, date: 100, action: 120 });
 
-  // Add-to-control state (exception rows)
-  const [addingStore, setAddingStore] = useState<string | null>(null); // storeCode currently saving
-  const [openDropdown, setOpenDropdown] = useState<string | null>(null); // storeCode with dropdown open
+  // Add-to-control state (exception rows) — keyed by row index string
+  const [addingRow, setAddingRow] = useState<string | null>(null); // row key currently saving
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null); // row key with dropdown open
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Auth check
   useEffect(() => {
@@ -454,9 +455,9 @@ export default function VisitReportPage() {
     if (authChecked) loadData();
   }, [authChecked, loadData]);
 
-  const addToControl = useCallback(async (storeName: string, storeCode: string, channel: string, status: string) => {
+  const addToControl = useCallback(async (rowKey: string, storeName: string, storeCode: string, channel: string, status: string) => {
     setOpenDropdown(null);
-    setAddingStore(storeCode);
+    setAddingRow(rowKey);
     try {
       const res = await fetch('/api/visit-report/control', {
         method: 'PATCH',
@@ -468,18 +469,22 @@ export default function VisitReportPage() {
         setUploadError(data.error ?? 'Failed to add store');
         return;
       }
+      setUploadSuccess(`Store "${storeName}" (${storeCode}) added to Control File as ${status}`);
       await loadData();
     } catch {
       setUploadError('Failed to add store — network error');
     } finally {
-      setAddingStore(null);
+      setAddingRow(null);
     }
   }, [loadData]);
 
   // Close add-to-control dropdown on outside click
   useEffect(() => {
     if (!openDropdown) return;
-    const handler = () => setOpenDropdown(null);
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && dropdownRef.current.contains(e.target as Node)) return;
+      setOpenDropdown(null);
+    };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [openDropdown]);
@@ -1664,8 +1669,9 @@ export default function VisitReportPage() {
                         <tbody>
                           {filteredExceptions.map((ex, idx) => {
                             const bg = idx % 2 === 0 ? '#ffffff' : '#fffbeb';
-                            const isSaving = addingStore === ex.storeCode;
-                            const isDropdownOpen = openDropdown === ex.storeCode;
+                            const rowKey = `${ex.storeCode}-${idx}`;
+                            const isSaving = addingRow === rowKey;
+                            const isDropdownOpen = openDropdown === rowKey;
                             return (
                               <tr key={`ex-${idx}`}>
                                 <td className="px-4 py-1.5 text-xs text-gray-400" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.num }}>{idx + 1}</td>
@@ -1678,10 +1684,10 @@ export default function VisitReportPage() {
                                   {isSaving ? (
                                     <span className="inline-block w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
                                   ) : (
-                                    <div className="relative inline-block" onMouseDown={e => e.stopPropagation()}>
+                                    <div className="relative inline-block" ref={isDropdownOpen ? dropdownRef : undefined}>
                                       <button
                                         type="button"
-                                        onClick={() => setOpenDropdown(isDropdownOpen ? null : ex.storeCode)}
+                                        onClick={() => setOpenDropdown(isDropdownOpen ? null : rowKey)}
                                         className="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors text-xs font-bold"
                                         title="Add to Control File"
                                       >
@@ -1693,7 +1699,7 @@ export default function VisitReportPage() {
                                             <button
                                               key={st}
                                               type="button"
-                                              onClick={() => addToControl(ex.storeName, ex.storeCode, ex.channel, st)}
+                                              onClick={() => addToControl(rowKey, ex.storeName, ex.storeCode, ex.channel, st)}
                                               className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 text-gray-700"
                                             >
                                               {st}
