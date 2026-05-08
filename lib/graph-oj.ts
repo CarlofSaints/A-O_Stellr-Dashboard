@@ -99,16 +99,12 @@ export async function uploadSpFile(filePath: string, content: string | Buffer | 
     .map(seg => encodeURIComponent(seg))
     .join('/');
 
-  const body: BodyInit = typeof content === 'string'
-    ? content
-    : new Blob([content], { type: contentType });
-
   const resp = await fetch(
     `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedPath}:/content`,
     {
       method: 'PUT',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType },
-      body,
+      body: content as BodyInit,
     }
   );
 

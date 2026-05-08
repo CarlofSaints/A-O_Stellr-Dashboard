@@ -153,8 +153,7 @@ export async function PATCH(req: NextRequest) {
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
 
-    const allStores = parseExcelToStores(new Uint8Array(outBuf).buffer as ArrayBuffer);
-    return NextResponse.json({ ok: true, storeCount: allStores.length });
+    return NextResponse.json({ ok: true, storeCount: rows.length + 1 });
   } catch (err) {
     console.error('Visit report control PATCH error:', err);
     return NextResponse.json({ error: 'Add store failed' }, { status: 500 });
