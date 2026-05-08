@@ -422,6 +422,7 @@ export default function VisitReportPage() {
   // Add-to-control state (exception rows) — keyed by row index string
   const [addingRow, setAddingRow] = useState<string | null>(null); // row key currently saving
   const [openDropdown, setOpenDropdown] = useState<string | null>(null); // row key with dropdown open
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Auth check
@@ -1680,34 +1681,24 @@ export default function VisitReportPage() {
                                 <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.name }}>{ex.storeName}</td>
                                 <td className="px-4 py-1.5 text-xs text-gray-500 font-mono" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.uuid }}>{ex.visitUuid}</td>
                                 <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.date }}>{ex.date}</td>
-                                <td className="px-2 py-1.5 text-center" style={{ backgroundColor: bg, borderBottom: GRID_BORDER, minWidth: exCw.action, position: 'relative' }}>
+                                <td className="px-2 py-1.5 text-center" style={{ backgroundColor: bg, borderBottom: GRID_BORDER, minWidth: exCw.action }}>
                                   {isSaving ? (
                                     <span className="inline-block w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
                                   ) : (
-                                    <div className="relative inline-block" ref={isDropdownOpen ? dropdownRef : undefined}>
-                                      <button
-                                        type="button"
-                                        onClick={() => setOpenDropdown(isDropdownOpen ? null : rowKey)}
-                                        className="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors text-xs font-bold"
-                                        title="Add to Control File"
-                                      >
-                                        +
-                                      </button>
-                                      {isDropdownOpen && (
-                                        <div className="absolute right-0 bottom-full mb-1 z-40 bg-white border border-gray-200 rounded-lg shadow-xl py-1 min-w-[130px]">
-                                          {(['ACTIVE', 'CLOSED', 'NOT IN CYCLE'] as const).map(st => (
-                                            <button
-                                              key={st}
-                                              type="button"
-                                              onClick={() => addToControl(rowKey, ex.storeName, ex.storeCode, ex.channel, st)}
-                                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 text-gray-700"
-                                            >
-                                              {st}
-                                            </button>
-                                          ))}
-                                        </div>
-                                      )}
-                                    </div>
+                                    <button
+                                      type="button"
+                                      ref={isDropdownOpen ? dropdownRef as React.RefObject<HTMLButtonElement> : undefined}
+                                      onClick={(e) => {
+                                        if (isDropdownOpen) { setOpenDropdown(null); return; }
+                                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                        setDropdownPos({ top: rect.bottom + 4, left: rect.left });
+                                        setOpenDropdown(rowKey);
+                                      }}
+                                      className="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors text-xs font-bold"
+                                      title="Add to Control File"
+                                    >
+                                      +
+                                    </button>
                                   )}
                                 </td>
                               </tr>
@@ -1723,6 +1714,32 @@ export default function VisitReportPage() {
           </>
         )}
       </main>
+
+      {/* Add-to-control dropdown portal (rendered outside scroll container) */}
+      {openDropdown && (() => {
+        const dashIdx = openDropdown.lastIndexOf('-');
+        const exIdx = Number(openDropdown.substring(dashIdx + 1));
+        const ex = filteredExceptions[exIdx];
+        if (!ex) return null;
+        return (
+          <div
+            ref={dropdownRef}
+            className="fixed z-50 bg-white border border-gray-200 rounded-lg shadow-xl py-1 min-w-[140px]"
+            style={{ top: dropdownPos.top, left: dropdownPos.left }}
+          >
+            {(['ACTIVE', 'CLOSED', 'NOT IN CYCLE'] as const).map(st => (
+              <button
+                key={st}
+                type="button"
+                onClick={() => addToControl(openDropdown, ex.storeName, ex.storeCode, ex.channel, st)}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-amber-50 text-gray-700"
+              >
+                {st}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Size warning modal */}
       {sizeConfirm && (
