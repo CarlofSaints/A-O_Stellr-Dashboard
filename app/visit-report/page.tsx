@@ -1687,7 +1687,6 @@ export default function VisitReportPage() {
                                   ) : (
                                     <button
                                       type="button"
-                                      ref={isDropdownOpen ? dropdownRef as React.RefObject<HTMLButtonElement> : undefined}
                                       onClick={(e) => {
                                         if (isDropdownOpen) { setOpenDropdown(null); return; }
                                         const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
