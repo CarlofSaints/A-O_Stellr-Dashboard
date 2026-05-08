@@ -423,36 +423,6 @@ export default function VisitReportPage() {
   const [addingStore, setAddingStore] = useState<string | null>(null); // storeCode currently saving
   const [openDropdown, setOpenDropdown] = useState<string | null>(null); // storeCode with dropdown open
 
-  const addToControl = useCallback(async (storeName: string, storeCode: string, channel: string, status: string) => {
-    setOpenDropdown(null);
-    setAddingStore(storeCode);
-    try {
-      const res = await fetch('/api/visit-report/control', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeName, storeCode, channel, status }),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        setUploadError(data.error ?? 'Failed to add store');
-        return;
-      }
-      await loadData();
-    } catch {
-      setUploadError('Failed to add store — network error');
-    } finally {
-      setAddingStore(null);
-    }
-  }, [loadData]);
-
-  // Close add-to-control dropdown on outside click
-  useEffect(() => {
-    if (!openDropdown) return;
-    const handler = () => setOpenDropdown(null);
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [openDropdown]);
-
   // Auth check
   useEffect(() => {
     const raw = localStorage.getItem('ao_session');
@@ -483,6 +453,36 @@ export default function VisitReportPage() {
   useEffect(() => {
     if (authChecked) loadData();
   }, [authChecked, loadData]);
+
+  const addToControl = useCallback(async (storeName: string, storeCode: string, channel: string, status: string) => {
+    setOpenDropdown(null);
+    setAddingStore(storeCode);
+    try {
+      const res = await fetch('/api/visit-report/control', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeName, storeCode, channel, status }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        setUploadError(data.error ?? 'Failed to add store');
+        return;
+      }
+      await loadData();
+    } catch {
+      setUploadError('Failed to add store — network error');
+    } finally {
+      setAddingStore(null);
+    }
+  }, [loadData]);
+
+  // Close add-to-control dropdown on outside click
+  useEffect(() => {
+    if (!openDropdown) return;
+    const handler = () => setOpenDropdown(null);
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [openDropdown]);
 
   const handleLogout = () => {
     localStorage.removeItem('ao_session');
