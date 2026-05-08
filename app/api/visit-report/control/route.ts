@@ -147,17 +147,18 @@ export async function PATCH(req: NextRequest) {
     ws['!ref'] = XLSX.utils.encode_range(range);
 
     // Write back to SharePoint
-    const outBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    const outArr = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
     await uploadSpFile(
       excelPath,
-      outBuf,
+      Buffer.from(outArr),
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
 
     return NextResponse.json({ ok: true, storeCount: rows.length + 1 });
   } catch (err) {
-    console.error('Visit report control PATCH error:', err);
-    return NextResponse.json({ error: 'Add store failed' }, { status: 500 });
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('Visit report control PATCH error:', msg);
+    return NextResponse.json({ error: `Add store failed: ${msg}` }, { status: 500 });
   }
 }
 
