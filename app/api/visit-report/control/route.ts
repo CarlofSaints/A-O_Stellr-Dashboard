@@ -6,14 +6,15 @@ export const dynamic = 'force-dynamic';
 
 const NO_CACHE = { 'Cache-Control': 'no-store, no-cache, must-revalidate' };
 
-const VALID_STATUSES = ['ACTIVE', 'CLOSED', 'NOT IN CYCLE'] as const;
+const VALID_STATUSES = ['ACTIVE', 'CLOSED', 'NOT IN CYCLE', 'LINKED'] as const;
 type StoreStatus = (typeof VALID_STATUSES)[number];
 
 interface Store {
   storeName: string;
   storeCode: string;
   channel: string;
-  status: string; // ACTIVE, CLOSED, or NOT IN CYCLE
+  status: string; // ACTIVE, CLOSED, NOT IN CYCLE, or LINKED
+  uid?: string;   // Unique ID to link duplicate stores together
 }
 
 interface ControlPayload {
@@ -47,6 +48,7 @@ function normaliseStatus(raw: string): StoreStatus {
   const s = raw.trim().toUpperCase();
   if (s === 'CLOSED') return 'CLOSED';
   if (s === 'NOT IN CYCLE') return 'NOT IN CYCLE';
+  if (s === 'LINKED') return 'LINKED';
   return 'ACTIVE';
 }
 
@@ -64,16 +66,21 @@ function parseExcelToStores(buf: ArrayBuffer): Store[] {
   const storeCodeCol = headers.find(h => /store\s*code/i.test(h));
   const channelCol = headers.find(h => /channel/i.test(h));
   const statusCol = headers.find(h => /^status$/i.test(h));
+  const uidCol = headers.find(h => /^uid$/i.test(h));
 
   if (!storeNameCol || !storeCodeCol || !channelCol) return [];
 
   return rows
-    .map(r => ({
-      storeName: String(r[storeNameCol] ?? '').trim(),
-      storeCode: String(r[storeCodeCol] ?? '').trim(),
-      channel: String(r[channelCol] ?? '').trim(),
-      status: normaliseStatus(statusCol ? String(r[statusCol] ?? '') : 'ACTIVE'),
-    }))
+    .map(r => {
+      const uid = uidCol ? String(r[uidCol] ?? '').trim() : '';
+      return {
+        storeName: String(r[storeNameCol] ?? '').trim(),
+        storeCode: String(r[storeCodeCol] ?? '').trim(),
+        channel: String(r[channelCol] ?? '').trim(),
+        status: normaliseStatus(statusCol ? String(r[statusCol] ?? '') : 'ACTIVE'),
+        ...(uid ? { uid } : {}),
+      };
+    })
     .filter(s => s.storeCode && s.channel);
 }
 
@@ -106,8 +113,8 @@ export async function GET() {
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
-    const { storeName, storeCode, channel, status } = body as {
-      storeName?: string; storeCode?: string; channel?: string; status?: string;
+    const { storeName, storeCode, channel, status, uid } = body as {
+      storeName?: string; storeCode?: string; channel?: string; status?: string; uid?: string;
     };
 
     if (!storeName || !storeCode || !channel || !status) {
@@ -118,6 +125,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     const normStatus = normaliseStatus(status);
+    const trimmedUid = (uid ?? '').trim();
 
     // Fetch current Excel
     const excelPath = controlExcelPath();
@@ -135,24 +143,39 @@ export async function PATCH(req: NextRequest) {
     const storeCodeCol = headers.find(h => /store\s*code/i.test(h)) ?? 'Store Code';
     const channelCol = headers.find(h => /channel/i.test(h)) ?? 'Channel';
     const statusCol = headers.find(h => /^status$/i.test(h)) ?? 'Status';
+    const uidColName = headers.find(h => /^uid$/i.test(h));
+
+    // Determine the column index for UID (E = index 4, or after the last known column)
+    const uidColIdx = 4;
 
     // Find actual last used row (don't trust !ref which may include empty trailing rows)
     const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1');
     let lastUsedRow = 0;
+    const maxCol = Math.max(4, range.e.c); // scan up to UID column too
     for (let r = range.e.r; r >= 0; r--) {
       let hasData = false;
-      for (let c = 0; c <= 3; c++) {
+      for (let c = 0; c <= maxCol; c++) {
         const cell = ws[XLSX.utils.encode_cell({ r, c })];
         if (cell && cell.v !== undefined && cell.v !== '') { hasData = true; break; }
       }
       if (hasData) { lastUsedRow = r; break; }
     }
+
+    // If UID header doesn't exist yet, add it to row 0
+    if (!uidColName) {
+      ws[XLSX.utils.encode_cell({ r: 0, c: uidColIdx })] = { t: 's', v: 'UID' };
+      if (range.e.c < uidColIdx) range.e.c = uidColIdx;
+    }
+
     // Add new row right after the last used row
     const newRowNum = lastUsedRow + 1;
     ws[XLSX.utils.encode_cell({ r: newRowNum, c: 0 })] = { t: 's', v: channel.trim() };
     ws[XLSX.utils.encode_cell({ r: newRowNum, c: 1 })] = { t: 's', v: storeName.trim() };
     ws[XLSX.utils.encode_cell({ r: newRowNum, c: 2 })] = { t: 's', v: storeCode.trim() };
     ws[XLSX.utils.encode_cell({ r: newRowNum, c: 3 })] = { t: 's', v: normStatus };
+    if (trimmedUid) {
+      ws[XLSX.utils.encode_cell({ r: newRowNum, c: uidColIdx })] = { t: 's', v: trimmedUid };
+    }
     if (newRowNum > range.e.r) {
       range.e.r = newRowNum;
       ws['!ref'] = XLSX.utils.encode_range(range);
@@ -203,6 +226,7 @@ export async function POST(req: NextRequest) {
     const storeCodeCol = headers.find(h => /store\s*code/i.test(h));
     const channelCol = headers.find(h => /channel/i.test(h));
     const statusCol = headers.find(h => /^status$/i.test(h));
+    const uidCol = headers.find(h => /^uid$/i.test(h));
 
     if (!storeNameCol || !storeCodeCol || !channelCol) {
       return NextResponse.json(
@@ -212,12 +236,16 @@ export async function POST(req: NextRequest) {
     }
 
     const stores: Store[] = rows
-      .map(r => ({
-        storeName: String(r[storeNameCol] ?? '').trim(),
-        storeCode: String(r[storeCodeCol] ?? '').trim(),
-        channel: String(r[channelCol] ?? '').trim(),
-        status: normaliseStatus(statusCol ? String(r[statusCol] ?? '') : 'ACTIVE'),
-      }))
+      .map(r => {
+        const uid = uidCol ? String(r[uidCol] ?? '').trim() : '';
+        return {
+          storeName: String(r[storeNameCol] ?? '').trim(),
+          storeCode: String(r[storeCodeCol] ?? '').trim(),
+          channel: String(r[channelCol] ?? '').trim(),
+          status: normaliseStatus(statusCol ? String(r[statusCol] ?? '') : 'ACTIVE'),
+          ...(uid ? { uid } : {}),
+        };
+      })
       .filter(s => s.storeCode && s.channel);
 
     const payload: ControlPayload = {

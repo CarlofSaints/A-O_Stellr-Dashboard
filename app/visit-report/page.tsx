@@ -19,7 +19,8 @@ interface CtrlStore {
   storeName: string;
   storeCode: string;
   channel: string;
-  status?: string; // ACTIVE, CLOSED, or NOT IN CYCLE
+  status?: string; // ACTIVE, CLOSED, NOT IN CYCLE, or LINKED
+  uid?: string;    // Links duplicate stores together — same UID = same store
 }
 
 interface ControlPayload {
@@ -148,9 +149,12 @@ function completionStyle(pct: number): React.CSSProperties {
 }
 
 /** Deduplicate control-file stores within each channel.
- *  Two entries in the same channel are the "same store" if they share
- *  the same store code OR the same store name (case-insensitive).
- *  Uses union-find to handle transitive matches. */
+ *  Two entries in the same channel are the "same store" if they share:
+ *  - the same UID (explicit linking for duplicates), OR
+ *  - the same store code, OR
+ *  - the same store name (case-insensitive)
+ *  Uses union-find to handle transitive matches.
+ *  LINKED stores are merged into the master (ACTIVE/CLOSED) entry. */
 function deduplicateStores(stores: CtrlStore[]): StoreGroup[] {
   const byChannel = new Map<string, CtrlStore[]>();
   for (const s of stores) {
@@ -172,6 +176,17 @@ function deduplicateStores(stores: CtrlStore[]): StoreGroup[] {
       if (ra !== rb) parent[ra] = rb;
     };
 
+    // Group by UID first (highest priority — explicit linking)
+    const byUid = new Map<string, number>();
+    for (let i = 0; i < entries.length; i++) {
+      const uid = (entries[i].uid ?? '').trim();
+      if (uid) {
+        if (byUid.has(uid)) unite(i, byUid.get(uid)!);
+        else byUid.set(uid, i);
+      }
+    }
+
+    // Then by name and code (existing logic)
     const byName = new Map<string, number>();
     const byCode = new Map<string, number>();
 
@@ -198,10 +213,17 @@ function deduplicateStores(stores: CtrlStore[]): StoreGroup[] {
 
     for (const indices of groups.values()) {
       const codes = [...new Set(indices.map(i => entries[i].storeCode))];
-      const name = entries[indices[0]].storeName;
-      // Priority: CLOSED > NOT IN CYCLE > ACTIVE
-      const statuses = indices.map(i => (entries[i].status ?? 'ACTIVE').toUpperCase());
-      const status = statuses.includes('CLOSED') ? 'CLOSED' : statuses.includes('NOT IN CYCLE') ? 'NOT IN CYCLE' : 'ACTIVE';
+      // Prefer the name from the master (non-LINKED) entry
+      const masterIdx = indices.find(i => (entries[i].status ?? 'ACTIVE').toUpperCase() !== 'LINKED');
+      const name = masterIdx !== undefined ? entries[masterIdx].storeName : entries[indices[0]].storeName;
+      // Status from the master entry; LINKED is never the group status
+      const nonLinkedStatuses = indices
+        .map(i => (entries[i].status ?? 'ACTIVE').toUpperCase())
+        .filter(s => s !== 'LINKED');
+      const status = nonLinkedStatuses.includes('CLOSED') ? 'CLOSED'
+        : nonLinkedStatuses.includes('NOT IN CYCLE') ? 'NOT IN CYCLE'
+        : nonLinkedStatuses.includes('ACTIVE') ? 'ACTIVE'
+        : 'LINKED'; // only if ALL entries are LINKED (edge case — no master defined yet)
       result.push({ storeName: name, storeCodes: codes, channel, status });
     }
   }
@@ -423,6 +445,7 @@ export default function VisitReportPage() {
   const [addingRow, setAddingRow] = useState<string | null>(null); // row key currently saving
   const [openDropdown, setOpenDropdown] = useState<string | null>(null); // row key with dropdown open
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [linkUid, setLinkUid] = useState(''); // UID input for LINKED status
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Auth check
@@ -456,21 +479,23 @@ export default function VisitReportPage() {
     if (authChecked) loadData();
   }, [authChecked, loadData]);
 
-  const addToControl = useCallback(async (rowKey: string, storeName: string, storeCode: string, channel: string, status: string) => {
+  const addToControl = useCallback(async (rowKey: string, storeName: string, storeCode: string, channel: string, status: string, uid?: string) => {
     setOpenDropdown(null);
+    setLinkUid('');
     setAddingRow(rowKey);
     try {
       const res = await fetch('/api/visit-report/control', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeName, storeCode, channel, status }),
+        body: JSON.stringify({ storeName, storeCode, channel, status, ...(uid ? { uid } : {}) }),
       });
       if (!res.ok) {
         const data = await res.json();
         setUploadError(data.error ?? 'Failed to add store');
         return;
       }
-      setUploadSuccess(`Store "${storeName}" (${storeCode}) added to Control File as ${status}`);
+      const uidNote = uid ? ` (UID: ${uid})` : '';
+      setUploadSuccess(`Store "${storeName}" (${storeCode}) added to Control File as ${status}${uidNote}`);
       await loadData();
     } catch {
       setUploadError('Failed to add store — network error');
@@ -485,6 +510,7 @@ export default function VisitReportPage() {
     const handler = (e: MouseEvent) => {
       if (dropdownRef.current && dropdownRef.current.contains(e.target as Node)) return;
       setOpenDropdown(null);
+      setLinkUid('');
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -603,7 +629,7 @@ export default function VisitReportPage() {
 
   const downloadTemplate = useCallback((type: 'control' | 'data') => {
     const headers = type === 'control'
-      ? ['Channel', 'Store Name', 'Store Code', 'Status']
+      ? ['Channel', 'Store Name', 'Store Code', 'Status', 'UID']
       : ['Channel', 'Store Code', 'Store Full Name', 'Check In Date'];
     const blob = new Blob([headers.join(',') + '\n'], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -1235,7 +1261,7 @@ export default function VisitReportPage() {
                     <input type="file" accept=".xlsx,.xls" onChange={handleFileInput('control')} className="hidden" disabled={uploading !== null} />
                   </label>
                   <div className="flex items-center justify-center mt-2 gap-1">
-                    <p className="text-[10px] text-gray-400">Excel with columns: Channel, Store Name, Store Code, Status</p>
+                    <p className="text-[10px] text-gray-400">Excel with columns: Channel, Store Name, Store Code, Status, UID</p>
                     <button type="button" onClick={() => downloadTemplate('control')} className="text-[10px] text-[#1B3A6B] hover:underline font-medium">
                       Download Template
                     </button>
@@ -1516,7 +1542,7 @@ export default function VisitReportPage() {
                                 <td className="px-3 py-1.5 text-gray-800 font-medium overflow-hidden text-ellipsis" style={frozenCell(2, cw, bg, false)}>{row.storeName}</td>
                                 <td className="px-3 py-1.5 text-xs text-gray-600" style={frozenCell(3, cw, bg, false)}>{row.storeCode}</td>
                                 <td className="px-3 py-1.5 text-xs" style={frozenCell(4, cw, bg, false)}>
-                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${row.status === 'CLOSED' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${row.status === 'CLOSED' ? 'bg-red-100 text-red-700' : row.status === 'NOT IN CYCLE' ? 'bg-gray-100 text-gray-600' : row.status === 'LINKED' ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700'}`}>
                                     {row.status}
                                   </span>
                                 </td>
@@ -1593,7 +1619,7 @@ export default function VisitReportPage() {
                                 <td className="px-3 py-1.5 font-medium overflow-hidden text-ellipsis" style={{ ...frozenCell(2, cw, bg, false), ...(isZero ? { color: '#dc2626', fontWeight: 700 } : { color: '#1f2937' }) }}>{row.storeName}</td>
                                 <td className="px-3 py-1.5 text-xs text-gray-600" style={frozenCell(3, cw, bg, false)}>{row.storeCode}</td>
                                 <td className="px-3 py-1.5 text-xs" style={frozenCell(4, cw, bg, false)}>
-                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${row.status === 'CLOSED' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${row.status === 'CLOSED' ? 'bg-red-100 text-red-700' : row.status === 'NOT IN CYCLE' ? 'bg-gray-100 text-gray-600' : row.status === 'LINKED' ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700'}`}>
                                     {row.status}
                                   </span>
                                 </td>
@@ -1723,7 +1749,7 @@ export default function VisitReportPage() {
         return (
           <div
             ref={dropdownRef}
-            className="fixed z-50 bg-white border border-gray-200 rounded-lg shadow-xl py-1 min-w-[140px]"
+            className="fixed z-50 bg-white border border-gray-200 rounded-lg shadow-xl py-1 min-w-[180px]"
             style={{ top: dropdownPos.top, left: dropdownPos.left }}
           >
             {(['ACTIVE', 'CLOSED', 'NOT IN CYCLE'] as const).map(st => (
@@ -1736,6 +1762,25 @@ export default function VisitReportPage() {
                 {st}
               </button>
             ))}
+            <div className="border-t border-gray-100 mt-1 pt-1 px-3 pb-2">
+              <p className="text-[10px] font-semibold text-purple-600 mb-1">LINKED (duplicate)</p>
+              <input
+                type="text"
+                value={linkUid}
+                onChange={e => setLinkUid(e.target.value)}
+                placeholder="Enter UID to link to..."
+                className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:border-purple-500 mb-1.5"
+                onClick={e => e.stopPropagation()}
+              />
+              <button
+                type="button"
+                disabled={!linkUid.trim()}
+                onClick={() => addToControl(openDropdown, ex.storeName, ex.storeCode, ex.channel, 'LINKED', linkUid.trim())}
+                className={`w-full text-left px-2 py-1.5 text-xs rounded font-medium ${linkUid.trim() ? 'bg-purple-50 text-purple-700 hover:bg-purple-100' : 'bg-gray-50 text-gray-400 cursor-not-allowed'}`}
+              >
+                Add as LINKED
+              </button>
+            </div>
           </div>
         );
       })()}
