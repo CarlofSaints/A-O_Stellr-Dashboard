@@ -302,7 +302,7 @@ async function appendCronLog(entry: CronLogEntry) {
   try {
     const logs = await readJson<CronLogEntry[]>(CRON_LOG_KEY, []);
     logs.unshift(entry);
-    await writeJson(CRON_LOG_KEY, logs.slice(0, 100));
+    await writeJson(CRON_LOG_KEY, logs.slice(0, 250));
   } catch {
     // Non-blocking
   }
