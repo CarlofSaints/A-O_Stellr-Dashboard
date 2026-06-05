@@ -333,11 +333,67 @@ export default function PdfDownloadPage() {
       const { jsPDF } = await import('jspdf');
       const doc = new jsPDF('p', 'mm', 'a4');
       const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
       const margin = 15;
       const contentW = pageW - margin * 2;
-      let y = margin;
+      const headerH = 12; // reserved height for repeating header
 
-      // Header
+      // Extract row metadata up front (used by header on every page)
+      const store = String(row['Store Name'] ?? row['Store'] ?? row['Customer'] ?? '').trim();
+      const channel = String(row['Channel'] ?? '').trim();
+      const date = String(row['Date'] ?? '').trim();
+      const rep = getRepName(row);
+      const province = String(row['Province'] ?? '').trim();
+
+      // Repeating header drawn on every page
+      const drawPageHeader = () => {
+        doc.setFontSize(8);
+        doc.setTextColor(100, 100, 100);
+        doc.setFont('helvetica', 'normal');
+        // Store name — left
+        doc.text(store || '', margin, 8);
+        // Date — centre
+        if (date) doc.text(date, pageW / 2, 8, { align: 'center' });
+        // Rep name — right
+        doc.text(rep || '', pageW - margin, 8, { align: 'right' });
+        // Thin separator line
+        doc.setDrawColor(200, 200, 200);
+        doc.setLineWidth(0.2);
+        doc.line(margin, 10, pageW - margin, 10);
+      };
+
+      // Helper to start a new page with the repeating header
+      const addPageWithHeader = () => {
+        doc.addPage();
+        drawPageHeader();
+        return headerH;
+      };
+
+      // ── Page 1 ──
+
+      // Draw repeating header on page 1
+      drawPageHeader();
+      let y = headerH;
+
+      // Perigee logo on page 1
+      let logoB64: string | null = null;
+      try {
+        const logoRes = await fetch('/perigee-logo.jpg');
+        if (logoRes.ok) {
+          const buf = await logoRes.arrayBuffer();
+          const b = btoa(
+            new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ''),
+          );
+          logoB64 = `data:image/jpeg;base64,${b}`;
+        }
+      } catch { /* skip logo */ }
+
+      if (logoB64) {
+        doc.addImage(logoB64, 'JPEG', margin, y, 50, 0);
+        y += 22; // logo height + gap
+      }
+
+      // Title
       doc.setFontSize(16);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(27, 58, 107); // #1B3A6B
@@ -354,12 +410,6 @@ export default function PdfDownloadPage() {
       y += 8;
 
       // Metadata block
-      const store = String(row['Store Name'] ?? row['Store'] ?? row['Customer'] ?? '').trim();
-      const channel = String(row['Channel'] ?? '').trim();
-      const date = String(row['Date'] ?? '').trim();
-      const rep = getRepName(row);
-      const province = String(row['Province'] ?? '').trim();
-
       doc.setFontSize(11);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(0, 0, 0);
@@ -406,8 +456,7 @@ export default function PdfDownloadPage() {
 
         // Check page overflow
         if (y > 270) {
-          doc.addPage();
-          y = margin;
+          y = addPageWithHeader();
         }
 
         doc.setFont('helvetica', 'bold');
@@ -430,8 +479,7 @@ export default function PdfDownloadPage() {
       }
 
       if (photoUrls.length > 0) {
-        doc.addPage();
-        y = margin;
+        y = addPageWithHeader();
         doc.setFontSize(12);
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(27, 58, 107);
@@ -446,8 +494,7 @@ export default function PdfDownloadPage() {
             if (!base64) continue;
 
             if (y > 60) {
-              doc.addPage();
-              y = margin;
+              y = addPageWithHeader();
             }
 
             doc.addImage(base64, 'JPEG', margin, y, contentW, 0);
@@ -463,8 +510,7 @@ export default function PdfDownloadPage() {
       const managerName = String(row['Manager Name'] ?? '').trim();
       const sigUrl = String(row['Signature'] ?? '').trim();
       if (managerName || sigUrl) {
-        doc.addPage();
-        y = margin;
+        y = addPageWithHeader();
         doc.setFontSize(12);
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(27, 58, 107);
@@ -497,14 +543,18 @@ export default function PdfDownloadPage() {
         }
       }
 
-      // Footer
+      // Footer on every page
+      const totalPages = doc.getNumberOfPages();
       doc.setFontSize(8);
       doc.setTextColor(150, 150, 150);
-      doc.text(
-        `Generated from A&O Dashboard on ${new Date().toLocaleDateString('en-ZA')}`,
-        margin,
-        doc.internal.pageSize.getHeight() - 10,
-      );
+      for (let p = 1; p <= totalPages; p++) {
+        doc.setPage(p);
+        doc.text(
+          `Generated from A&O Dashboard on ${new Date().toLocaleDateString('en-ZA')}`,
+          margin,
+          pageH - 10,
+        );
+      }
 
       // Download
       const fileName = [store, channel, date].filter(Boolean).join(' - ') || 'form-report';
