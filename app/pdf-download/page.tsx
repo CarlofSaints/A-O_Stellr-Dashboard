@@ -176,6 +176,20 @@ export default function PdfDownloadPage() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
+  // Sort state
+  type SortCol = 'store' | 'channel' | 'rep' | 'date' | 'photos' | 'signature';
+  const [sortCol, setSortCol] = useState<SortCol | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+
+  const toggleSort = (col: SortCol) => {
+    if (sortCol === col) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortCol(col);
+      setSortDir('asc');
+    }
+  };
+
   // PDF generation state
   const [generating, setGenerating] = useState<string | null>(null);
 
@@ -324,6 +338,37 @@ export default function PdfDownloadPage() {
       return true;
     });
   }, [allRows, selChannels, selStores, dateFrom, dateTo, selFormNames, signatures]);
+
+  // Sort filtered rows
+  const sortedRows = useMemo(() => {
+    if (!sortCol) return filteredRows;
+
+    const getStore = (r: VisitRow) => String(r['Store Name'] ?? r['Store'] ?? r['Customer'] ?? '').trim().toLowerCase();
+    const getChannel = (r: VisitRow) => String(r['Channel'] ?? '').trim().toLowerCase();
+    const getRep = (r: VisitRow) => getRepName(r).toLowerCase();
+    const getDate = (r: VisitRow) => parseDMY(String(r['Date'] ?? '').trim());
+    const getPhotos = (r: VisitRow) => imageColumns.filter(ic =>
+      ic !== 'Signature' && r[ic] && typeof r[ic] === 'string' && String(r[ic]).startsWith('https://')
+    ).length;
+    const getSig = (r: VisitRow) => (r['Manager Name'] ? 1 : 0);
+
+    return [...filteredRows].sort((a, b) => {
+      let cmp = 0;
+      switch (sortCol) {
+        case 'store': cmp = getStore(a).localeCompare(getStore(b)); break;
+        case 'channel': cmp = getChannel(a).localeCompare(getChannel(b)); break;
+        case 'rep': cmp = getRep(a).localeCompare(getRep(b)); break;
+        case 'date': {
+          const da = getDate(a), db = getDate(b);
+          cmp = (da?.getTime() ?? 0) - (db?.getTime() ?? 0);
+          break;
+        }
+        case 'photos': cmp = getPhotos(a) - getPhotos(b); break;
+        case 'signature': cmp = getSig(a) - getSig(b); break;
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }, [filteredRows, sortCol, sortDir, imageColumns]);
 
   // Generate PDF for a single row
   const generatePdf = useCallback(async (row: VisitRow, rowIndex: number) => {
@@ -665,17 +710,38 @@ export default function PdfDownloadPage() {
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-100 sticky top-0 z-10">
                     <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500">#</th>
-                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500">Store</th>
-                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500">Channel</th>
-                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500">Rep</th>
-                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500">Date</th>
-                    <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-500">Photos</th>
-                    <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-500">Signature</th>
+                    {([
+                      ['store', 'Store', 'left'],
+                      ['channel', 'Channel', 'left'],
+                      ['rep', 'Rep', 'left'],
+                      ['date', 'Date', 'left'],
+                      ['photos', 'Photos', 'center'],
+                      ['signature', 'Signature', 'center'],
+                    ] as [SortCol, string, string][]).map(([col, label, align]) => (
+                      <th
+                        key={col}
+                        className={`px-4 py-2.5 text-${align} text-xs font-semibold text-gray-500 cursor-pointer select-none hover:text-gray-700 transition-colors`}
+                        onClick={() => toggleSort(col)}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          {label}
+                          {sortCol === col ? (
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={sortDir === 'asc' ? 'M5 15l7-7 7 7' : 'M19 9l-7 7-7-7'} />
+                            </svg>
+                          ) : (
+                            <svg className="w-3 h-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                            </svg>
+                          )}
+                        </span>
+                      </th>
+                    ))}
                     <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 w-28">&nbsp;</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRows.slice(0, 200).map((row, i) => {
+                  {sortedRows.slice(0, 200).map((row, i) => {
                     const store = String(row['Store Name'] ?? row['Store'] ?? row['Customer'] ?? '').trim();
                     const channel = String(row['Channel'] ?? '').trim();
                     const date = String(row['Date'] ?? '').trim();
@@ -726,9 +792,9 @@ export default function PdfDownloadPage() {
                 </tbody>
               </table>
             </div>
-            {filteredRows.length > 200 && (
+            {sortedRows.length > 200 && (
               <div className="px-4 py-3 border-t border-gray-100 text-xs text-gray-400 text-center">
-                Showing first 200 of {filteredRows.length} records. Use filters to narrow results.
+                Showing first 200 of {sortedRows.length} records. Use filters to narrow results.
               </div>
             )}
           </div>
