@@ -532,15 +532,17 @@ export default function PdfDownloadPage() {
         y += 8;
 
         let loaded = 0;
+        const failures: string[] = [];
         for (const photoUrl of photoUrls) {
           try {
             const res = await fetch(`/api/pdf-image?url=${encodeURIComponent(photoUrl)}`);
             if (!res.ok) {
-              console.warn(`[PDF] Photo fetch ${res.status}: ${photoUrl.slice(0, 120)}`);
+              const body = await res.text().catch(() => '');
+              failures.push(`HTTP ${res.status}: ${body || photoUrl.slice(0, 80)}`);
               continue;
             }
             const { base64 } = await res.json();
-            if (!base64) continue;
+            if (!base64) { failures.push('Empty base64 response'); continue; }
 
             if (y > 60) {
               y = addPageWithHeader();
@@ -550,15 +552,11 @@ export default function PdfDownloadPage() {
             y += contentW * 0.75 + 8;
             loaded++;
           } catch (e) {
-            console.warn('[PDF] Photo error:', photoUrl.slice(0, 120), e);
+            failures.push(`Error: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
-        if (loaded === 0) {
-          doc.setFontSize(9);
-          doc.setFont('helvetica', 'italic');
-          doc.setTextColor(150, 150, 150);
-          doc.text(`(${photoUrls.length} photo(s) could not be loaded)`, margin, y);
-          y += 6;
+        if (failures.length > 0) {
+          alert(`Photos: ${loaded}/${photoUrls.length} loaded.\nFailures:\n${failures.slice(0, 5).join('\n')}`);
         }
       }
 
