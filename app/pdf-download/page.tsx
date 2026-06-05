@@ -1,9 +1,125 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import type { FormType, VisitRow, LoadedFile, SignatureRecord } from '@/lib/types';
+
+// ─── Multi-select dropdown with search ───────────────────────────────────────
+
+function MultiSelectFilter({
+  label,
+  items,
+  selected,
+  onChange,
+}: {
+  label: string;
+  items: string[];
+  selected: string[];
+  onChange: (v: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Click outside to close
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    if (!query) return items;
+    const q = query.toLowerCase();
+    return items.filter(i => i.toLowerCase().includes(q));
+  }, [items, query]);
+
+  const allSelected = items.length > 0 && selected.length === items.length;
+
+  const toggle = (item: string) => {
+    onChange(
+      selected.includes(item)
+        ? selected.filter(s => s !== item)
+        : [...selected, item],
+    );
+  };
+
+  const toggleAll = () => {
+    onChange(allSelected ? [] : [...items]);
+  };
+
+  const summary =
+    selected.length === 0
+      ? `All ${label}`
+      : selected.length === 1
+        ? selected[0]
+        : selected.length === items.length
+          ? `All ${label}`
+          : `${selected.length} selected`;
+
+  return (
+    <div ref={ref} className="relative">
+      <label className="block text-xs font-medium text-gray-500 mb-1">{label}</label>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-left bg-white flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-[#1B3A6B]/30"
+      >
+        <span className="truncate text-gray-700">{summary}</span>
+        <svg className={`w-4 h-4 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 flex flex-col">
+          {/* Search */}
+          <div className="p-2 border-b border-gray-100">
+            <input
+              type="text"
+              placeholder="Search..."
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              className="w-full border border-gray-200 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#1B3A6B]/30"
+              autoFocus
+            />
+          </div>
+          {/* Select All */}
+          <label className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 text-xs font-semibold text-gray-600">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleAll}
+              className="rounded border-gray-300 text-[#1B3A6B] focus:ring-[#1B3A6B]/30"
+            />
+            Select All ({items.length})
+          </label>
+          {/* Items */}
+          <div className="overflow-y-auto flex-1">
+            {filtered.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-gray-400">No matches</p>
+            ) : (
+              filtered.map(item => (
+                <label key={item} className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer text-xs text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(item)}
+                    onChange={() => toggle(item)}
+                    className="rounded border-gray-300 text-[#1B3A6B] focus:ring-[#1B3A6B]/30"
+                  />
+                  <span className="truncate">{item}</span>
+                </label>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface Session {
   id: string;
@@ -53,10 +169,10 @@ export default function PdfDownloadPage() {
   const [signatures, setSignatures] = useState<SignatureRecord[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Filter state
-  const [selChannel, setSelChannel] = useState('');
-  const [selFormName, setSelFormName] = useState('');
-  const [selStore, setSelStore] = useState('');
+  // Filter state (multi-select arrays — empty = all)
+  const [selChannels, setSelChannels] = useState<string[]>([]);
+  const [selFormNames, setSelFormNames] = useState<string[]>([]);
+  const [selStores, setSelStores] = useState<string[]>([]);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
@@ -169,16 +285,16 @@ export default function PdfDownloadPage() {
   // Filtered rows
   const filteredRows = useMemo(() => {
     return allRows.filter(row => {
-      // Channel filter
-      if (selChannel) {
+      // Channel filter (empty = all)
+      if (selChannels.length > 0) {
         const ch = String(row['Channel'] ?? '').trim();
-        if (ch !== selChannel) return false;
+        if (!selChannels.includes(ch)) return false;
       }
 
-      // Store filter
-      if (selStore) {
+      // Store filter (empty = all)
+      if (selStores.length > 0) {
         const store = String(row['Store Name'] ?? row['Store'] ?? row['Customer'] ?? '').trim();
-        if (store !== selStore) return false;
+        if (!selStores.includes(store)) return false;
       }
 
       // Date filter
@@ -193,18 +309,21 @@ export default function PdfDownloadPage() {
         }
       }
 
-      // Form name filter
-      if (selFormName) {
+      // Form name filter (empty = all)
+      if (selFormNames.length > 0) {
         const uuid = String(row['Visit UUID'] ?? '').trim();
         const sig = signatures.find(s => s.visitUuid === uuid);
-        const matchesSignatureForm = sig?.formNames.includes(selFormName);
-        const matchesFileName = String(row['_fileName'] ?? '').replace(/\.[^/.]+$/, '') === selFormName;
-        if (!matchesSignatureForm && !matchesFileName) return false;
+        const sigFormNames = sig?.formNames ?? [];
+        const fileName = String(row['_fileName'] ?? '').replace(/\.[^/.]+$/, '');
+        const matchesAny = selFormNames.some(
+          fn => sigFormNames.includes(fn) || fileName === fn,
+        );
+        if (!matchesAny) return false;
       }
 
       return true;
     });
-  }, [allRows, selChannel, selStore, dateFrom, dateTo, selFormName, signatures]);
+  }, [allRows, selChannels, selStores, dateFrom, dateTo, selFormNames, signatures]);
 
   // Generate PDF for a single row
   const generatePdf = useCallback(async (row: VisitRow, rowIndex: number) => {
@@ -427,49 +546,28 @@ export default function PdfDownloadPage() {
           <p className="text-sm font-semibold text-gray-700 mb-4">Filters</p>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
             {/* Form Name */}
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Form Name</label>
-              <select
-                value={selFormName}
-                onChange={e => setSelFormName(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1B3A6B]/30"
-              >
-                <option value="">All Forms</option>
-                {formNames.map(fn => (
-                  <option key={fn} value={fn}>{fn}</option>
-                ))}
-              </select>
-            </div>
+            <MultiSelectFilter
+              label="Form Name"
+              items={formNames}
+              selected={selFormNames}
+              onChange={setSelFormNames}
+            />
 
             {/* Channel */}
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Channel</label>
-              <select
-                value={selChannel}
-                onChange={e => setSelChannel(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1B3A6B]/30"
-              >
-                <option value="">All Channels</option>
-                {channels.map(ch => (
-                  <option key={ch} value={ch}>{ch}</option>
-                ))}
-              </select>
-            </div>
+            <MultiSelectFilter
+              label="Channel"
+              items={channels}
+              selected={selChannels}
+              onChange={setSelChannels}
+            />
 
             {/* Store */}
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Store</label>
-              <select
-                value={selStore}
-                onChange={e => setSelStore(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1B3A6B]/30"
-              >
-                <option value="">All Stores</option>
-                {stores.map(s => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            </div>
+            <MultiSelectFilter
+              label="Store"
+              items={stores}
+              selected={selStores}
+              onChange={setSelStores}
+            />
 
             {/* Date From */}
             <div>
