@@ -374,6 +374,21 @@ export default function PdfDownloadPage() {
     });
   }, [filteredRows, sortCol, sortDir, imageColumns]);
 
+  // Fetch image as base64 via the same /api/image proxy the dashboard uses
+  const fetchImageB64 = useCallback(async (url: string): Promise<string | null> => {
+    try {
+      const res = await fetch(`/api/image?url=${encodeURIComponent(url)}`);
+      if (!res.ok) return null;
+      const buf = await res.arrayBuffer();
+      if (buf.byteLength === 0) return null;
+      const contentType = res.headers.get('content-type') ?? 'image/jpeg';
+      const b = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ''));
+      return `data:${contentType};base64,${b}`;
+    } catch {
+      return null;
+    }
+  }, []);
+
   // Generate PDF for a single row
   const generatePdf = useCallback(async (row: VisitRow, rowIndex: number) => {
     const rowId = String(row['Visit UUID'] ?? rowIndex);
@@ -536,21 +551,15 @@ export default function PdfDownloadPage() {
         y += 8;
 
         for (const photoUrl of photoUrls) {
-          try {
-            const res = await fetch(`/api/pdf-image?url=${encodeURIComponent(photoUrl)}`);
-            if (!res.ok) continue;
-            const { base64 } = await res.json();
-            if (!base64) continue;
+          const base64 = await fetchImageB64(photoUrl);
+          if (!base64) continue;
 
-            if (y > 60) {
-              y = addPageWithHeader();
-            }
-
-            doc.addImage(base64, 'JPEG', margin, y, contentW, 0);
-            y += contentW * 0.75 + 8;
-          } catch {
-            // Skip failed images
+          if (y > 60) {
+            y = addPageWithHeader();
           }
+
+          doc.addImage(base64, 'JPEG', margin, y, contentW, 0);
+          y += contentW * 0.75 + 8;
         }
       }
 
@@ -576,17 +585,10 @@ export default function PdfDownloadPage() {
         }
 
         if (sigUrl && sigUrl.startsWith('https://')) {
-          try {
-            const res = await fetch(`/api/pdf-image?url=${encodeURIComponent(sigUrl)}`);
-            if (res.ok) {
-              const { base64 } = await res.json();
-              if (base64) {
-                doc.addImage(base64, 'JPEG', margin, y, 80, 0);
-                y += 50;
-              }
-            }
-          } catch {
-            // Skip failed signature image
+          const sigB64 = await fetchImageB64(sigUrl);
+          if (sigB64) {
+            doc.addImage(sigB64, 'JPEG', margin, y, 80, 0);
+            y += 50;
           }
         }
       }
@@ -613,7 +615,7 @@ export default function PdfDownloadPage() {
     } finally {
       setGenerating(null);
     }
-  }, [allHeaders, imageColumns]);
+  }, [allHeaders, imageColumns, fetchImageB64]);
 
   if (!session) return null;
 
