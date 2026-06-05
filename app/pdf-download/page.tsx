@@ -531,10 +531,14 @@ export default function PdfDownloadPage() {
         doc.text('Survey Photos', margin, y);
         y += 8;
 
+        let loaded = 0;
         for (const photoUrl of photoUrls) {
           try {
             const res = await fetch(`/api/pdf-image?url=${encodeURIComponent(photoUrl)}`);
-            if (!res.ok) continue;
+            if (!res.ok) {
+              console.warn(`[PDF] Photo fetch ${res.status}: ${photoUrl.slice(0, 120)}`);
+              continue;
+            }
             const { base64 } = await res.json();
             if (!base64) continue;
 
@@ -543,11 +547,18 @@ export default function PdfDownloadPage() {
             }
 
             doc.addImage(base64, 'JPEG', margin, y, contentW, 0);
-            // Estimate image height (assume roughly 3:4 aspect ratio)
             y += contentW * 0.75 + 8;
-          } catch {
-            // Skip failed images
+            loaded++;
+          } catch (e) {
+            console.warn('[PDF] Photo error:', photoUrl.slice(0, 120), e);
           }
+        }
+        if (loaded === 0) {
+          doc.setFontSize(9);
+          doc.setFont('helvetica', 'italic');
+          doc.setTextColor(150, 150, 150);
+          doc.text(`(${photoUrls.length} photo(s) could not be loaded)`, margin, y);
+          y += 6;
         }
       }
 
