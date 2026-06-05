@@ -311,14 +311,18 @@ export default function PdfDownloadPage() {
         if (!selStores.includes(store)) return false;
       }
 
-      // Date filter
+      // Date filter — parse filter dates as local time to match parseDMY
       const dateStr = String(row['Date'] ?? '').trim();
       const d = parseDMY(dateStr);
       if (d) {
-        if (dateFrom && d < new Date(dateFrom)) return false;
+        if (dateFrom) {
+          const [fy, fm, fd] = dateFrom.split('-').map(Number);
+          const from = new Date(fy, fm - 1, fd);
+          if (d < from) return false;
+        }
         if (dateTo) {
-          const to = new Date(dateTo);
-          to.setHours(23, 59, 59, 999);
+          const [ty, tm, td] = dateTo.split('-').map(Number);
+          const to = new Date(ty, tm - 1, td, 23, 59, 59, 999);
           if (d > to) return false;
         }
       }

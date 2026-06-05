@@ -564,8 +564,8 @@ export default function Dashboard() {
   // Stores available given current channel/province/rep/date selections (cascaded)
   const availableStores = useMemo(() => {
     if (!mergedData || !storeCol || selChannels.length === 0) return [];
-    const fromDate = dateFrom ? new Date(dateFrom) : null;
-    const toDate   = dateTo   ? new Date(dateTo)   : null;
+    const fromDate = dateFrom ? (() => { const [y,m,d] = dateFrom.split('-').map(Number); return new Date(y, m-1, d); })() : null;
+    const toDate   = dateTo   ? (() => { const [y,m,d] = dateTo.split('-').map(Number);   return new Date(y, m-1, d, 23, 59, 59, 999); })() : null;
     return unique(
       mergedData.rows
         .filter(row => {
@@ -609,8 +609,8 @@ export default function Dashboard() {
 
   const filteredRows = useMemo(() => {
     if (!mergedData || selChannels.length === 0) return [];
-    const fromDate = dateFrom ? new Date(dateFrom) : null;
-    const toDate   = dateTo   ? new Date(dateTo)   : null;
+    const fromDate = dateFrom ? (() => { const [y,m,d] = dateFrom.split('-').map(Number); return new Date(y, m-1, d); })() : null;
+    const toDate   = dateTo   ? (() => { const [y,m,d] = dateTo.split('-').map(Number);   return new Date(y, m-1, d, 23, 59, 59, 999); })() : null;
     return mergedData.rows.filter(row => {
       const channel  = String(row['Channel']  ?? '').trim();
       const province = String(row['Province'] ?? '').trim();
