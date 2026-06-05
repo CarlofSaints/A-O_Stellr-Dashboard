@@ -531,18 +531,12 @@ export default function PdfDownloadPage() {
         doc.text('Survey Photos', margin, y);
         y += 8;
 
-        let loaded = 0;
-        const failures: string[] = [];
         for (const photoUrl of photoUrls) {
           try {
             const res = await fetch(`/api/pdf-image?url=${encodeURIComponent(photoUrl)}`);
-            if (!res.ok) {
-              const body = await res.text().catch(() => '');
-              failures.push(`HTTP ${res.status}: ${body || photoUrl.slice(0, 80)}`);
-              continue;
-            }
+            if (!res.ok) continue;
             const { base64 } = await res.json();
-            if (!base64) { failures.push('Empty base64 response'); continue; }
+            if (!base64) continue;
 
             if (y > 60) {
               y = addPageWithHeader();
@@ -550,13 +544,9 @@ export default function PdfDownloadPage() {
 
             doc.addImage(base64, 'JPEG', margin, y, contentW, 0);
             y += contentW * 0.75 + 8;
-            loaded++;
-          } catch (e) {
-            failures.push(`Error: ${e instanceof Error ? e.message : String(e)}`);
+          } catch {
+            // Skip failed images
           }
-        }
-        if (failures.length > 0) {
-          alert(`Photos: ${loaded}/${photoUrls.length} loaded.\nFailures:\n${failures.slice(0, 5).join('\n')}`);
         }
       }
 
