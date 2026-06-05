@@ -418,9 +418,9 @@ export default function PdfDownloadPage() {
 
       // Draw repeating header on page 1
       drawPageHeader();
-      let y = headerH;
+      let y = headerH + 4; // gap below header line
 
-      // Perigee logo on page 1
+      // Perigee logo on page 1 (fetched once)
       let logoB64: string | null = null;
       try {
         const logoRes = await fetch('/perigee-logo.jpg');
@@ -433,17 +433,16 @@ export default function PdfDownloadPage() {
         }
       } catch { /* skip logo */ }
 
-      if (logoB64) {
-        const logoW = 15; // 70% smaller than original 50mm
-        doc.addImage(logoB64, 'JPEG', pageW - margin - logoW, y, logoW, 0);
-        // Logo sits in the top-right; don't advance y — title goes on the left
-      }
-
-      // Title
+      // Title (left) + Logo (right) on the same row
       doc.setFontSize(16);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(27, 58, 107); // #1B3A6B
       doc.text('A&O Interactive Services', margin, y);
+      if (logoB64) {
+        const logoW = 15;
+        // Vertically centre logo with the title text (title baseline at y, logo top ~5mm above)
+        doc.addImage(logoB64, 'JPEG', pageW - margin - logoW, y - 5, logoW, 0);
+      }
       y += 8;
       doc.setFontSize(10);
       doc.setFont('helvetica', 'normal');
