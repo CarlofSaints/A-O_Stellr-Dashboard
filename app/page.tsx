@@ -3,12 +3,13 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import type { FormType, VisitRow, LoadedFile } from '@/lib/types';
+import type { FormType, VisitRow, LoadedFile, SignatureRecord } from '@/lib/types';
 
 const FORM_TYPE_LABELS: Record<FormType, string> = {
   'merch': 'Merch Form',
   'stock-count': 'Stock Count Form',
   'stand': 'Stand Form',
+  'signature': 'Signature Form',
 };
 
 interface Session {
@@ -378,6 +379,7 @@ export default function Dashboard() {
   const [channelLoading, setChannelLoading] = useState(false);
   const [cacheInfo, setCacheInfo] = useState<{ updatedAt: string; updatedBy: string } | null>(null);
   const [indexChannels, setIndexChannels] = useState<ChannelSummary[]>([]);
+  const [signatures, setSignatures] = useState<SignatureRecord[]>([]);
 
   // Dual-scroll sync refs
   const tableScrollRef  = useRef<HTMLDivElement>(null);
@@ -453,8 +455,33 @@ export default function Dashboard() {
     const rows: VisitRow[] = formFilteredFiles.flatMap(f =>
       f.rows.map(r => ({ ...r, _source: f.name, _formType: f.formType ?? 'merch' } as VisitRow))
     );
+
+    // Inject signature data by matching Visit UUID
+    if (signatures.length > 0) {
+      const sigMap = new Map(signatures.map(s => [s.visitUuid, s]));
+      for (const row of rows) {
+        const uuid = String(row['Visit UUID'] ?? '').trim();
+        if (uuid) {
+          const sig = sigMap.get(uuid);
+          if (sig) {
+            row['Manager Name'] = sig.managerName;
+            row['Signature'] = sig.signatureUrl;
+          }
+        }
+      }
+      // Add Manager Name and Signature to headers if signatures matched any rows
+      const hasMatches = rows.some(r => r['Manager Name']);
+      if (hasMatches) {
+        if (!headers.includes('Manager Name')) headers.push('Manager Name');
+        if (!headers.includes('Signature')) {
+          headers.push('Signature');
+          imageColumns.push('Signature');
+        }
+      }
+    }
+
     return { headers, rows, imageColumns };
-  }, [formFilteredFiles]);
+  }, [formFilteredFiles, signatures]);
 
   const channelCol = useMemo(
     () => mergedData?.headers.find(h => h.toLowerCase() === 'channel') ?? null,
@@ -648,16 +675,23 @@ export default function Dashboard() {
     if (!authChecked || autoLoaded.current) return;
     autoLoaded.current = true;
     setCacheLoading(true);
-    fetch('/api/sp-cache', { cache: 'no-store' })
-      .then(r => r.json())
-      .then((data: IndexPayload | null) => {
-        if (data?.channels?.length) {
-          setIndexChannels(data.channels);
-          setCacheInfo({ updatedAt: data.updatedAt, updatedBy: data.updatedBy });
-        }
-      })
-      .catch(() => { /* no cache — show upload UI */ })
-      .finally(() => setCacheLoading(false));
+    Promise.all([
+      fetch('/api/sp-cache', { cache: 'no-store' })
+        .then(r => r.json())
+        .then((data: IndexPayload | null) => {
+          if (data?.channels?.length) {
+            setIndexChannels(data.channels);
+            setCacheInfo({ updatedAt: data.updatedAt, updatedBy: data.updatedBy });
+          }
+        })
+        .catch(() => { /* no cache — show upload UI */ }),
+      fetch('/api/signatures', { cache: 'no-store' })
+        .then(r => r.json())
+        .then((sigs: SignatureRecord[]) => {
+          if (Array.isArray(sigs)) setSignatures(sigs);
+        })
+        .catch(() => { /* no signatures yet */ }),
+    ]).finally(() => setCacheLoading(false));
   }, [authChecked]);
 
 
@@ -775,6 +809,12 @@ export default function Dashboard() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
               </svg>
               Visit Report
+            </button>
+            <button onClick={() => router.push('/pdf-download')} className="text-gray-400 hover:text-[#1B3A6B] text-xs flex items-center gap-1 transition-colors" title="PDF Download">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              PDF Download
             </button>
             {session?.isAdmin && (
               <>
@@ -1071,20 +1111,27 @@ export default function Dashboard() {
                               const isImage = mergedData.imageColumns.includes(h);
                               if (isImage) {
                                 if (val && typeof val === 'string' && val.startsWith('https://')) {
-                                  const imgToken = extractImageToken(val);
-                                  const spUrl = imgToken
-                                    ? `/api/sp-image?token=${encodeURIComponent(imgToken)}`
-                                    : null;
+                                  // Use Perigee proxy for Perigee URLs, SP proxy for others
+                                  const isPerigee = val.startsWith('https://live.perigeeportal.co.za');
+                                  let displayUrl: string | null;
+                                  if (isPerigee) {
+                                    displayUrl = `/api/image?url=${encodeURIComponent(val)}`;
+                                  } else {
+                                    const imgToken = extractImageToken(val);
+                                    displayUrl = imgToken
+                                      ? `/api/sp-image?token=${encodeURIComponent(imgToken)}`
+                                      : null;
+                                  }
                                   return (
                                     <td key={h} className="px-2 py-1.5">
                                       <div className="flex flex-col items-start gap-1">
-                                        {spUrl ? (
+                                        {displayUrl ? (
                                           // eslint-disable-next-line @next/next/no-img-element
                                           <img
-                                            src={spUrl}
+                                            src={displayUrl}
                                             alt={h}
                                             className="h-16 w-20 object-cover rounded border border-gray-200 cursor-pointer hover:opacity-80 transition-opacity"
-                                            onClick={() => setLightboxUrl(spUrl)}
+                                            onClick={() => setLightboxUrl(displayUrl!)}
                                             loading="lazy"
                                           />
                                         ) : (

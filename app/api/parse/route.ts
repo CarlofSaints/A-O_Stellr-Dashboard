@@ -8,6 +8,7 @@ const SECTION_HEADERS = new Set(['Media', 'Stock', 'Stock On Hand', 'Training St
 /** Auto-detect form type from raw Excel headers (before filtering) */
 function detectFormType(headers: string[]): FormType {
   const set = new Set(headers.map(h => h.toLowerCase().trim()));
+  if (set.has("manager's name and surname") && set.has('signature')) return 'signature';
   if (set.has('stock on hand')) return 'stock-count';
   if (set.has('display stands identification')) return 'stand';
   return 'merch';

@@ -8,6 +8,7 @@ const FORM_TYPE_LABELS: Record<FormType, string> = {
   'merch': 'Merch Form',
   'stock-count': 'Stock Count Form',
   'stand': 'Stand Form',
+  'signature': 'Signature Form',
 };
 
 interface Session {
@@ -48,6 +49,7 @@ export default function AdminDataPage() {
   const [dragOver, setDragOver] = useState(false);
   const [reports, setReports] = useState<UploadReport[]>([]);
   const [resetting, setResetting] = useState<string | null>(null);
+  const [formTypeOverride, setFormTypeOverride] = useState<FormType | 'auto'>('auto');
   const router = useRouter();
 
   useEffect(() => {
@@ -96,58 +98,86 @@ export default function AdminDataPage() {
         const json = await res.json();
         if (!res.ok) throw new Error(json.error ?? 'Parse failed');
         const parsed = json as ParseResult;
-        report.formType = parsed.formType;
+        // Apply form type override if set
+        const effectiveFormType = formTypeOverride !== 'auto' ? formTypeOverride : parsed.formType;
+        report.formType = effectiveFormType;
 
-        // 2. Split rows by their actual Channel value (FIX for the multi-channel bug)
-        const rowsByChannel = new Map<string, VisitRow[]>();
-        for (const row of parsed.rows) {
-          const ch = String(row['Channel'] ?? '').trim() || stripExt(file.name);
-          if (!rowsByChannel.has(ch)) rowsByChannel.set(ch, []);
-          rowsByChannel.get(ch)!.push(row);
-        }
-
-        // 3. POST one channel at a time (server merges + dedupes by Visit UUID + formType)
-        for (const [channel, rows] of rowsByChannel) {
-          const loadedFile: LoadedFile = {
-            name: stripExt(file.name),
-            fileName: file.name,
-            rowCount: rows.length,
-            headers: parsed.headers,
-            imageColumns: parsed.imageColumns,
-            rows,
-            imageFolderName: parsed.imageFolderName ?? '',
-            uploadedAt: new Date().toISOString(),
-            uploadedBy: session?.name ?? 'Unknown',
-            channel,
-            formType: parsed.formType,
-          };
-
+        // Signature forms go to a separate API
+        if (effectiveFormType === 'signature') {
           try {
-            const postRes = await fetch('/api/sp-cache', {
+            const postRes = await fetch('/api/signatures', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
+                rows: parsed.rows,
+                headers: parsed.headers,
                 updatedBy: session?.name ?? 'Unknown',
-                channel,
-                files: [loadedFile],
               }),
             });
             const postJson = await postRes.json();
             if (!postRes.ok) {
-              throw new Error(postJson.error ?? 'Cache save failed');
+              throw new Error(postJson.error ?? 'Signature save failed');
             }
             report.channels.push({
-              name: channel,
-              rows: rows.length,
-              added: postJson.added ?? 0,
+              name: 'Signatures',
+              rows: parsed.rows.length,
+              added: postJson.imported ?? 0,
             });
           } catch (err) {
-            report.channels.push({
-              name: channel,
-              rows: rows.length,
-              added: 0,
-            });
-            report.error = (report.error ? report.error + '; ' : '') + `${channel}: ${err instanceof Error ? err.message : 'unknown error'}`;
+            report.error = err instanceof Error ? err.message : 'unknown error';
+          }
+        } else {
+          // 2. Split rows by their actual Channel value (FIX for the multi-channel bug)
+          const rowsByChannel = new Map<string, VisitRow[]>();
+          for (const row of parsed.rows) {
+            const ch = String(row['Channel'] ?? '').trim() || stripExt(file.name);
+            if (!rowsByChannel.has(ch)) rowsByChannel.set(ch, []);
+            rowsByChannel.get(ch)!.push(row);
+          }
+
+          // 3. POST one channel at a time (server merges + dedupes by Visit UUID + formType)
+          for (const [channel, rows] of rowsByChannel) {
+            const loadedFile: LoadedFile = {
+              name: stripExt(file.name),
+              fileName: file.name,
+              rowCount: rows.length,
+              headers: parsed.headers,
+              imageColumns: parsed.imageColumns,
+              rows,
+              imageFolderName: parsed.imageFolderName ?? '',
+              uploadedAt: new Date().toISOString(),
+              uploadedBy: session?.name ?? 'Unknown',
+              channel,
+              formType: effectiveFormType,
+            };
+
+            try {
+              const postRes = await fetch('/api/sp-cache', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  updatedBy: session?.name ?? 'Unknown',
+                  channel,
+                  files: [loadedFile],
+                }),
+              });
+              const postJson = await postRes.json();
+              if (!postRes.ok) {
+                throw new Error(postJson.error ?? 'Cache save failed');
+              }
+              report.channels.push({
+                name: channel,
+                rows: rows.length,
+                added: postJson.added ?? 0,
+              });
+            } catch (err) {
+              report.channels.push({
+                name: channel,
+                rows: rows.length,
+                added: 0,
+              });
+              report.error = (report.error ? report.error + '; ' : '') + `${channel}: ${err instanceof Error ? err.message : 'unknown error'}`;
+            }
           }
         }
       } catch (e) {
@@ -202,6 +232,29 @@ export default function AdminDataPage() {
       </header>
 
       <main className="max-w-4xl mx-auto px-6 py-8 space-y-6">
+
+        {/* Form type selector */}
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-4 py-3 flex items-center gap-3">
+            <label className="text-sm font-semibold text-gray-700 whitespace-nowrap">Form Type:</label>
+            <select
+              value={formTypeOverride}
+              onChange={e => setFormTypeOverride(e.target.value as FormType | 'auto')}
+              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#1B3A6B]/30 focus:border-[#1B3A6B]"
+            >
+              <option value="auto">Auto-detect</option>
+              <option value="merch">Merch Form</option>
+              <option value="stock-count">Stock Count Form</option>
+              <option value="stand">Stand Form</option>
+              <option value="signature">Signature Form</option>
+            </select>
+            {formTypeOverride !== 'auto' && (
+              <span className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded">
+                Override active — will treat uploads as {FORM_TYPE_LABELS[formTypeOverride]}
+              </span>
+            )}
+          </div>
+        </div>
 
         {/* Upload zone */}
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
