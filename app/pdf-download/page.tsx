@@ -434,8 +434,9 @@ export default function PdfDownloadPage() {
       } catch { /* skip logo */ }
 
       if (logoB64) {
-        doc.addImage(logoB64, 'JPEG', margin, y, 50, 0);
-        y += 22; // logo height + gap
+        const logoW = 15; // 70% smaller than original 50mm
+        doc.addImage(logoB64, 'JPEG', pageW - margin - logoW, y, logoW, 0);
+        // Logo sits in the top-right; don't advance y — title goes on the left
       }
 
       // Title
