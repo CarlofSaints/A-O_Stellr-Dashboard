@@ -778,7 +778,7 @@ export default function Dashboard() {
     <div className="min-h-screen" style={{ backgroundImage: "url('/stellr-bg.jpg')", backgroundSize: 'cover', backgroundAttachment: 'fixed', backgroundPosition: 'center' }}>
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-3 shadow-sm">
-        <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
+        <div className="w-full flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <Image
               src="/ao-logo.png" alt="A&O" width={72} height={36} className="object-contain"
@@ -849,7 +849,7 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-[1600px] mx-auto px-6 py-6">
+      <main className="w-full px-6 py-6">
 
         {/* Loading index from cache */}
         {indexChannels.length === 0 && cacheLoading && (
@@ -1022,7 +1022,7 @@ export default function Dashboard() {
                 ref={tableScrollRef}
                 onScroll={onTableScroll}
                 className={isFullscreen ? 'hide-x-scrollbar flex-1' : 'hide-x-scrollbar'}
-                style={{ overflowX: 'scroll', overflowY: 'auto', maxHeight: isFullscreen ? undefined : '70vh' }}
+                style={{ overflowX: 'scroll', overflowY: 'auto', maxHeight: isFullscreen ? undefined : '82vh' }}
               >
                 <table
                   className="text-sm border-collapse"
