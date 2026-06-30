@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { readJson, writeJson } from '@/lib/blob';
 import { requireAdmin } from '@/lib/auth';
 import { fetchSpFile, uploadSpFile } from '@/lib/graph-oj';
+import { fetchAllPerigeeVisits, PerigeeFetchError } from '@/lib/perigeeFetch';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -188,37 +189,22 @@ export async function GET(req: NextRequest) {
     perigeeBody.startDate = startDate;
     perigeeBody.endDate = today;
 
-    // Call Perigee API
-    const perigeeRes = await fetch(config.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify(perigeeBody),
-    });
-
-    if (!perigeeRes.ok) {
-      const errText = await perigeeRes.text().catch(() => '');
-      logEntry.error = `Perigee ${perigeeRes.status}: ${errText.slice(0, 200)}`;
-      await appendCronLog(logEntry);
-      return NextResponse.json({ ok: false, error: logEntry.error }, { status: 502 });
+    // Call Perigee API — walk every page (paginated response).
+    let rawVisits: Record<string, unknown>[];
+    let pageInfo;
+    try {
+      const result = await fetchAllPerigeeVisits(config.endpoint, config.apiKey, perigeeBody);
+      rawVisits = result.rows;
+      pageInfo = result.pageInfo;
+    } catch (e) {
+      if (e instanceof PerigeeFetchError) {
+        logEntry.error = `Perigee ${e.status}: ${e.detail.slice(0, 200)}`;
+        await appendCronLog(logEntry);
+        return NextResponse.json({ ok: false, error: logEntry.error }, { status: 502 });
+      }
+      throw e;
     }
-
-    const perigeeData = await perigeeRes.json();
     await writeJson(CONFIG_KEY, { ...config, lastPolledAt: new Date().toISOString() });
-
-    // Extract visits array
-    let rawVisits: Record<string, unknown>[] = [];
-    if (Array.isArray(perigeeData)) {
-      rawVisits = perigeeData;
-    } else if (perigeeData.visits && Array.isArray(perigeeData.visits.data)) {
-      rawVisits = perigeeData.visits.data;
-    } else if (Array.isArray(perigeeData.visits)) {
-      rawVisits = perigeeData.visits;
-    } else if (Array.isArray(perigeeData.data)) {
-      rawVisits = perigeeData.data;
-    }
 
     if (rawVisits.length === 0) {
       logEntry.result = 'No visits returned';
@@ -289,6 +275,7 @@ export async function GET(req: NextRequest) {
       imported: newVisits.length,
       skipped,
       totalStored: mergedVisits.length,
+      pageInfo,
     });
   } catch (err) {
     logEntry.error = err instanceof Error ? err.message : 'Unknown error';
