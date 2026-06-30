@@ -41,6 +41,14 @@ interface CronLogEntry {
   error?: string;
 }
 
+interface PageInfo {
+  pagesFetched?: number;
+  totalRows?: number;
+  reportedTotal?: number | null;
+  reportedLastPage?: number | null;
+  stoppedReason?: string;
+}
+
 interface TestResult {
   ok?: boolean;
   error?: string;
@@ -51,6 +59,19 @@ interface TestResult {
   rawTopLevelKeys?: string[];
   meta?: Record<string, unknown>;
   sentBody?: Record<string, unknown>;
+  pageInfo?: PageInfo;
+}
+
+interface ImportResult {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+  message?: string;
+  totalRows?: number;
+  importedRows?: number;
+  skippedDuplicates?: number;
+  totalStored?: number;
+  pageInfo?: PageInfo;
 }
 
 const DEFAULT_BODY = JSON.stringify({
@@ -95,6 +116,7 @@ export default function AdminSettingsPage() {
   const [testing, setTesting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [toast, setToast] = useState('');
 
   const [schedule, setSchedule] = useState<PollSchedule>({ slots: [], timezone: 'Africa/Johannesburg' });
@@ -228,6 +250,7 @@ export default function AdminSettingsPage() {
     } else {
       if (!confirm(`Import visits from ${parsed.startDate}? This will fetch data from Perigee.`)) return;
       setImporting(true);
+      setImportResult(null);
     }
 
     try {
@@ -242,7 +265,8 @@ export default function AdminSettingsPage() {
         setTestResult(data);
         showToast(data.ok ? `Test OK \u2014 ${data.totalRows} visits returned` : (data.error || 'Test failed'));
       } else {
-        showToast(data.ok ? `${data.totalRows} visits returned` : (data.error || 'Import failed'));
+        setImportResult(data);
+        showToast(data.ok ? `Imported ${data.importedRows ?? 0} visits` : (data.error || 'Import failed'));
       }
     } catch {
       showToast(`${mode === 'test' ? 'Connection' : 'Import'} failed`);
@@ -383,6 +407,12 @@ export default function AdminSettingsPage() {
                 <>
                   <p className="font-semibold text-green-800 mb-1">
                     Connection successful &mdash; {testResult.totalRows} visits returned
+                    {testResult.pageInfo?.pagesFetched != null && (
+                      <span className="font-normal text-gray-500">
+                        {' '}across {testResult.pageInfo.pagesFetched} page{testResult.pageInfo.pagesFetched === 1 ? '' : 's'}
+                        {testResult.pageInfo.stoppedReason ? ` (${testResult.pageInfo.stoppedReason})` : ''}
+                      </span>
+                    )}
                   </p>
                   {testResult.responseKeys && testResult.responseKeys.length > 0 && (
                     <p className="text-gray-700 text-xs mb-2">
@@ -419,6 +449,45 @@ export default function AdminSettingsPage() {
                   <p className="font-semibold text-red-800 mb-1">{testResult.error}</p>
                   {testResult.detail && (
                     <pre className="overflow-auto max-h-36 text-xs text-gray-600">{testResult.detail}</pre>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Import Results */}
+          {importResult && (
+            <div className={`mt-4 p-4 rounded-lg text-sm border ${importResult.ok ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+              {importResult.ok ? (
+                <>
+                  <p className="font-semibold text-green-800 mb-1">
+                    {importResult.importedRows && importResult.importedRows > 0
+                      ? `Imported ${importResult.importedRows} new visit${importResult.importedRows === 1 ? '' : 's'}`
+                      : (importResult.message || 'No new visits imported')}
+                  </p>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-gray-700">
+                    <span><strong>{importResult.importedRows ?? 0}</strong> imported</span>
+                    <span><strong>{importResult.skippedDuplicates ?? 0}</strong> skipped (already had)</span>
+                    <span><strong>{importResult.totalRows ?? 0}</strong> fetched from Perigee</span>
+                    {importResult.totalStored != null && (
+                      <span><strong>{importResult.totalStored}</strong> stored total</span>
+                    )}
+                    {importResult.pageInfo?.pagesFetched != null && (
+                      <span><strong>{importResult.pageInfo.pagesFetched}</strong> page{importResult.pageInfo.pagesFetched === 1 ? '' : 's'}</span>
+                    )}
+                    {importResult.pageInfo?.reportedTotal != null && (
+                      <span>Perigee reported <strong>{importResult.pageInfo.reportedTotal}</strong> total</span>
+                    )}
+                  </div>
+                  {importResult.pageInfo?.stoppedReason && (
+                    <p className="mt-1 text-gray-500 text-xs">Paging stopped: {importResult.pageInfo.stoppedReason}</p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="font-semibold text-red-800 mb-1">{importResult.error || 'Import failed'}</p>
+                  {importResult.detail && (
+                    <pre className="overflow-auto max-h-36 text-xs text-gray-600">{importResult.detail}</pre>
                   )}
                 </>
               )}
