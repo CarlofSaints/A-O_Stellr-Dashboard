@@ -5,8 +5,20 @@ import type { FormType, ParseResult, VisitRow } from '@/lib/types';
 // Perigee section-header artefacts — not real data columns
 const SECTION_HEADERS = new Set(['Media', 'Stock', 'Stock On Hand', 'Training Stuff', 'Staff', 'Line Management']);
 
-/** Auto-detect form type from raw Excel headers (before filtering) */
-function detectFormType(headers: string[]): FormType {
+/**
+ * Auto-detect form type.
+ * The client's redesigned Perigee forms dropped the old marker columns
+ * ("Stock On Hand" / "Display Stands Identification"), so header sniffing alone
+ * now misclassifies the count + stand exports as plain merch. The export
+ * filename is the reliable signal ("… In Store Merc Count …", "… stands …"),
+ * so it takes precedence; header markers remain as a fallback for the separately
+ * exported sign-off form and any legacy files.
+ */
+function detectFormType(headers: string[], fileName: string): FormType {
+  const fn = fileName.toLowerCase();
+  if (fn.includes('merc count')) return 'stock-count';
+  if (/\bstands?\b/.test(fn)) return 'stand';
+
   const set = new Set(headers.map(h => h.toLowerCase().trim()));
   if (set.has("manager's name and surname") && set.has('signature')) return 'signature';
   if (set.has('stock on hand')) return 'stock-count';
@@ -53,13 +65,28 @@ export async function POST(req: NextRequest) {
     }
 
     const allHeaders = (raw[0] as (string | null)[]).map(h => String(h ?? '').trim());
-    const formType = detectFormType(allHeaders);
+    const formType = detectFormType(allHeaders, file.name ?? '');
+
+    // Disambiguate duplicate header names. The redesigned forms repeat the same
+    // question label after every display section (e.g. "Stand back and take a
+    // photo of the area where the display is situated."). Rows are keyed by
+    // header, so without unique names every repeated column collapses onto the
+    // last one — silently dropping all but the final section's photo. Suffix
+    // repeats with " (2)", " (3)", … so each column keeps its own value.
+    const seenHeader = new Map<string, number>();
+    const headers = allHeaders.map(h => {
+      if (!h) return h;
+      const n = (seenHeader.get(h) ?? 0) + 1;
+      seenHeader.set(h, n);
+      return n === 1 ? h : `${h} (${n})`;
+    });
+
     const dataRows = raw.slice(1) as (string | number | null | Date)[][];
 
     // Detect image columns — any column whose values start with the Perigee portal URL
     const imageCols = new Set<string>();
     for (const row of dataRows) {
-      allHeaders.forEach((h, i) => {
+      headers.forEach((h, i) => {
         const val = row[i];
         if (typeof val === 'string' && val.startsWith('https://live.perigeeportal.co.za')) {
           imageCols.add(h);
@@ -68,12 +95,12 @@ export async function POST(req: NextRequest) {
     }
 
     // Keep only meaningful headers
-    const keepHeaders = allHeaders.filter(h => h && !SECTION_HEADERS.has(h));
+    const keepHeaders = headers.filter(h => h && !SECTION_HEADERS.has(h));
 
     const rows: VisitRow[] = dataRows
       .map(row => {
         const obj: VisitRow = {};
-        allHeaders.forEach((h, i) => {
+        headers.forEach((h, i) => {
           if (!keepHeaders.includes(h)) return;
           const val = row[i];
           // Convert Date objects (from cellDates) to DD/MM/YYYY string
