@@ -243,6 +243,18 @@ export async function PATCH(req: NextRequest) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('Visit report control PATCH error:', msg);
+    // 423 Locked = the workbook is open in Excel (desktop or online). Nothing is
+    // wrong with the app; say so plainly rather than surfacing a raw status code.
+    if (msg.includes('423')) {
+      return NextResponse.json(
+        {
+          error:
+            `"${CONTROL_FILE_NAME}" is currently open in Excel, so SharePoint is refusing the update. ` +
+            `Close the file (desktop Excel and any Excel Online tab), wait a few seconds, then try again.`,
+        },
+        { status: 409 },
+      );
+    }
     return NextResponse.json({ error: `Add store failed: ${msg}` }, { status: 500 });
   }
 }

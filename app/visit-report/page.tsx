@@ -1661,6 +1661,18 @@ export default function VisitReportPage() {
                           {filteredExceptions.length} visits from {new Set(filteredExceptions.map(e => e.storeCode)).size} unique stores not in the Site Control File
                         </span>
                       </p>
+                      {/* Action feedback, repeated here — the banner at the top of the
+                          page is far off-screen from the buttons that trigger it. */}
+                      {uploadError && (
+                        <p className="mt-1.5 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+                          {uploadError}
+                        </p>
+                      )}
+                      {uploadSuccess && (
+                        <p className="mt-1.5 text-xs text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1.5">
+                          {uploadSuccess}
+                        </p>
+                      )}
                       {control?.source === 'legacy-json' && (
                         <p className="mt-1.5 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
                           <strong>Stale data:</strong> the live SharePoint control file could not be read, so this list
