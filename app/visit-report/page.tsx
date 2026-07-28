@@ -39,6 +39,14 @@ interface Visit {
   visitUuid: string;
 }
 
+/** An exception action chosen but not yet written to the control file */
+interface QueuedAction {
+  storeName: string;
+  channel: string;
+  status: string;
+  uid?: string;
+}
+
 interface DataPayload {
   updatedAt: string;
   updatedBy: string;
@@ -443,8 +451,12 @@ export default function VisitReportPage() {
   // Exceptions column widths
   const [exCw, setExCw] = useState<ExWidths>({ num: 40, ch: 150, code: 120, name: 280, uuid: 300, date: 100, action: 120 });
 
-  // Add-to-control state (exception rows) — keyed by row index string
-  const [addingRow, setAddingRow] = useState<string | null>(null); // row key currently saving
+  // Add-to-control state (exception rows).
+  // Actions are queued locally and applied in one batch on Submit — a store can
+  // appear on many exception rows, and each immediate write meant a full
+  // workbook round-trip plus a page-wide reload.
+  const [queued, setQueued] = useState<Record<string, QueuedAction>>({}); // keyed by storeCode
+  const [submitting, setSubmitting] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null); // row key with dropdown open
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const [linkUid, setLinkUid] = useState(''); // UID input for LINKED status
@@ -481,30 +493,63 @@ export default function VisitReportPage() {
     if (authChecked) loadData();
   }, [authChecked, loadData]);
 
-  const addToControl = useCallback(async (rowKey: string, storeName: string, storeCode: string, channel: string, status: string, uid?: string) => {
+  /** Stage an action locally. Nothing is written until Submit. */
+  const queueAction = useCallback((storeName: string, storeCode: string, channel: string, status: string, uid?: string) => {
     setOpenDropdown(null);
     setLinkUid('');
-    setAddingRow(rowKey);
+    setUploadError(null);
+    setUploadSuccess(null);
+    setQueued(prev => ({ ...prev, [storeCode]: { storeName, channel, status, ...(uid ? { uid } : {}) } }));
+  }, []);
+
+  const unqueueAction = useCallback((storeCode: string) => {
+    setQueued(prev => {
+      const next = { ...prev };
+      delete next[storeCode];
+      return next;
+    });
+  }, []);
+
+  /** Write every queued action in one request, then reload once. */
+  const submitQueue = useCallback(async () => {
+    const entries = Object.entries(queued);
+    if (entries.length === 0) return;
+
+    setSubmitting(true);
+    setUploadError(null);
+    setUploadSuccess(null);
     try {
       const res = await fetch('/api/visit-report/control', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeName, storeCode, channel, status, ...(uid ? { uid } : {}) }),
+        body: JSON.stringify({
+          stores: entries.map(([storeCode, a]) => ({
+            storeCode,
+            storeName: a.storeName,
+            channel: a.channel,
+            status: a.status,
+            ...(a.uid ? { uid: a.uid } : {}),
+          })),
+        }),
       });
+      const data = await res.json();
       if (!res.ok) {
-        const data = await res.json();
-        setUploadError(data.error ?? 'Failed to add store');
+        // Keep the queue intact so the work isn't lost — a locked control file
+        // is the common case here and it clears on its own.
+        setUploadError(data.error ?? 'Failed to update the Control File');
         return;
       }
-      const uidNote = uid ? ` (UID: ${uid})` : '';
-      setUploadSuccess(`Store "${storeName}" (${storeCode}) added to Control File as ${status}${uidNote}`);
+      const skipped = (data.skipped as string[] | undefined) ?? [];
+      const skipNote = skipped.length ? ` ${skipped.length} already in the file (${skipped.join(', ')}).` : '';
+      setUploadSuccess(`${data.added} store${data.added === 1 ? '' : 's'} added to the Control File.${skipNote}`);
+      setQueued({});
       await loadData();
     } catch {
-      setUploadError('Failed to add store — network error');
+      setUploadError('Failed to update the Control File — network error');
     } finally {
-      setAddingRow(null);
+      setSubmitting(false);
     }
-  }, [loadData]);
+  }, [queued, loadData]);
 
   // Close add-to-control dropdown on outside click
   useEffect(() => {
@@ -701,6 +746,8 @@ export default function VisitReportPage() {
         date: v.date,
       }));
   }, [controlCodeSet, visitData]);
+
+  const queuedCount = useMemo(() => Object.keys(queued).length, [queued]);
 
   // Filter exceptions by selected channels
   const filteredExceptions = useMemo(() => {
@@ -1655,12 +1702,40 @@ export default function VisitReportPage() {
                 {filteredExceptions.length > 0 && (
                   <div className="bg-white rounded-xl border border-amber-300 shadow-sm overflow-hidden mt-5">
                     <div className="px-4 py-3 border-b border-amber-200 bg-amber-50">
-                      <p className="text-sm font-semibold text-amber-800">
-                        Exceptions
-                        <span className="ml-2 text-xs font-normal text-amber-600">
-                          {filteredExceptions.length} visits from {new Set(filteredExceptions.map(e => e.storeCode)).size} unique stores not in the Site Control File
-                        </span>
-                      </p>
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <p className="text-sm font-semibold text-amber-800">
+                          Exceptions
+                          <span className="ml-2 text-xs font-normal text-amber-600">
+                            {filteredExceptions.length} visits from {new Set(filteredExceptions.map(e => e.storeCode)).size} unique stores not in the Site Control File
+                          </span>
+                        </p>
+                        {queuedCount > 0 && (
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-xs font-medium text-green-800">
+                              {queuedCount} store{queuedCount === 1 ? '' : 's'} queued
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setQueued({})}
+                              disabled={submitting}
+                              className="px-2.5 py-1 text-xs text-gray-600 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-40"
+                            >
+                              Clear
+                            </button>
+                            <button
+                              type="button"
+                              onClick={submitQueue}
+                              disabled={submitting}
+                              className="px-3 py-1 text-xs font-medium text-white bg-green-700 rounded hover:bg-green-800 disabled:opacity-50 inline-flex items-center gap-1.5"
+                            >
+                              {submitting && (
+                                <span className="inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                              )}
+                              {submitting ? 'Saving…' : `Submit ${queuedCount}`}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                       {/* Action feedback, repeated here — the banner at the top of the
                           page is far off-screen from the buttons that trigger it. */}
                       {uploadError && (
@@ -1716,12 +1791,12 @@ export default function VisitReportPage() {
                         </thead>
                         <tbody>
                           {filteredExceptions.map((ex, idx) => {
-                            const bg = idx % 2 === 0 ? '#ffffff' : '#fffbeb';
+                            const pending = queued[ex.storeCode];
+                            const bg = pending ? '#f0fdf4' : idx % 2 === 0 ? '#ffffff' : '#fffbeb';
                             const rowKey = `${ex.storeCode}-${idx}`;
-                            const isSaving = addingRow === rowKey;
                             const isDropdownOpen = openDropdown === rowKey;
                             return (
-                              <tr key={`ex-${idx}`}>
+                              <tr key={`ex-${idx}`} style={pending ? { opacity: 0.65 } : undefined}>
                                 <td className="px-4 py-1.5 text-xs text-gray-400" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.num }}>{idx + 1}</td>
                                 <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.ch }}>{ex.channel}</td>
                                 <td className="px-4 py-1.5 text-xs text-gray-700 font-mono" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.code }}>{ex.storeCode}</td>
@@ -1729,18 +1804,35 @@ export default function VisitReportPage() {
                                 <td className="px-4 py-1.5 text-xs text-gray-500 font-mono" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.uuid }}>{ex.visitUuid}</td>
                                 <td className="px-4 py-1.5 text-xs text-gray-700" style={{ backgroundColor: bg, borderRight: GRID_BORDER, borderBottom: GRID_BORDER, minWidth: exCw.date }}>{ex.date}</td>
                                 <td className="px-2 py-1.5 text-center" style={{ backgroundColor: bg, borderBottom: GRID_BORDER, minWidth: exCw.action }}>
-                                  {isSaving ? (
-                                    <span className="inline-block w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                                  {pending ? (
+                                    <span className="inline-flex items-center gap-1">
+                                      <span
+                                        className="px-1.5 py-0.5 rounded bg-green-100 text-green-800 text-[10px] font-semibold"
+                                        title={pending.uid ? `Queued as ${pending.status} — UID ${pending.uid}` : `Queued as ${pending.status}`}
+                                      >
+                                        {pending.status}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => unqueueAction(ex.storeCode)}
+                                        disabled={submitting}
+                                        className="text-gray-400 hover:text-red-600 text-xs leading-none disabled:opacity-40"
+                                        title="Remove from queue"
+                                      >
+                                        ✕
+                                      </button>
+                                    </span>
                                   ) : (
                                     <button
                                       type="button"
+                                      disabled={submitting}
                                       onClick={(e) => {
                                         if (isDropdownOpen) { setOpenDropdown(null); return; }
                                         const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
                                         setDropdownPos({ top: rect.bottom + 4, left: rect.left });
                                         setOpenDropdown(rowKey);
                                       }}
-                                      className="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors text-xs font-bold"
+                                      className="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors text-xs font-bold disabled:opacity-40"
                                       title="Add to Control File"
                                     >
                                       +
@@ -1777,7 +1869,7 @@ export default function VisitReportPage() {
               <button
                 key={st}
                 type="button"
-                onClick={() => addToControl(openDropdown, ex.storeName, ex.storeCode, ex.channel, st)}
+                onClick={() => queueAction(ex.storeName, ex.storeCode, ex.channel, st)}
                 className="w-full text-left px-3 py-2 text-sm hover:bg-amber-50 text-gray-700"
               >
                 {st}
@@ -1796,7 +1888,7 @@ export default function VisitReportPage() {
               <button
                 type="button"
                 disabled={!linkUid.trim()}
-                onClick={() => addToControl(openDropdown, ex.storeName, ex.storeCode, ex.channel, 'LINKED', linkUid.trim())}
+                onClick={() => queueAction(ex.storeName, ex.storeCode, ex.channel, 'LINKED', linkUid.trim())}
                 className={`w-full text-left px-2 py-1.5 text-xs rounded font-medium ${linkUid.trim() ? 'bg-purple-50 text-purple-700 hover:bg-purple-100' : 'bg-gray-50 text-gray-400 cursor-not-allowed'}`}
               >
                 Add as LINKED

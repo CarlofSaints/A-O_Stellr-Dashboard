@@ -149,23 +149,35 @@ export async function GET() {
   }
 }
 
-// PATCH — add a single store to the Excel control file
+interface StoreInput {
+  storeName?: string;
+  storeCode?: string;
+  channel?: string;
+  status?: string;
+  uid?: string;
+}
+
+// PATCH — add one or many stores to the Excel control file.
+// Accepts either a single store at the top level (legacy) or { stores: [...] }.
+// A batch is applied in ONE fetch-modify-upload cycle: sending N single requests
+// would download and re-upload the whole workbook N times and race itself.
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
-    const { storeName, storeCode, channel, status, uid } = body as {
-      storeName?: string; storeCode?: string; channel?: string; status?: string; uid?: string;
-    };
+    const incoming: StoreInput[] = Array.isArray((body as { stores?: StoreInput[] }).stores)
+      ? (body as { stores: StoreInput[] }).stores
+      : [body as StoreInput];
 
-    if (!storeName || !storeCode || !channel || !status) {
+    if (incoming.length === 0) {
+      return NextResponse.json({ error: 'No stores supplied' }, { status: 400 });
+    }
+    const invalid = incoming.find(s => !s.storeName || !s.storeCode || !s.channel || !s.status);
+    if (invalid) {
       return NextResponse.json(
-        { error: 'storeName, storeCode, channel, and status are required' },
+        { error: 'storeName, storeCode, channel, and status are required for every store' },
         { status: 400 },
       );
     }
-
-    const normStatus = normaliseStatus(status);
-    const trimmedUid = (uid ?? '').trim();
 
     // Fetch current Excel — write back to whatever path it resolved to
     const { buf, path: excelPath } = await fetchControlExcel();
@@ -215,23 +227,55 @@ export async function PATCH(req: NextRequest) {
       range.e.c = uidIdx;
     }
 
-    // Add new row right after the last used row
-    const newRowNum = lastUsedRow + 1;
-    const put = (c: number, v: string) => {
-      ws[XLSX.utils.encode_cell({ r: newRowNum, c })] = { t: 's', v };
-    };
-    put(channelIdx, channel.trim());
-    put(nameIdx, storeName.trim());
-    put(codeIdx, storeCode.trim());
-    put(statusIdx, normStatus);
-    if (trimmedUid) put(uidIdx, trimmedUid);
+    // Codes already in the sheet — a queue can legitimately contain a store that
+    // someone else added in the meantime; skip rather than duplicate it.
+    const existingCodes = new Set(
+      rows
+        .map(r => {
+          const key = Object.keys(r).find(h => /store\s*code/i.test(h));
+          return key ? String(r[key] ?? '').trim().toUpperCase() : '';
+        })
+        .filter(Boolean),
+    );
+
+    // Append each store on its own row after the last used row
+    let nextRow = lastUsedRow;
+    const added: string[] = [];
+    const skipped: string[] = [];
+
+    for (const s of incoming) {
+      const code = s.storeCode!.trim();
+      if (existingCodes.has(code.toUpperCase())) {
+        skipped.push(code);
+        continue;
+      }
+      existingCodes.add(code.toUpperCase());
+
+      nextRow += 1;
+      const put = (c: number, v: string) => {
+        ws[XLSX.utils.encode_cell({ r: nextRow, c })] = { t: 's', v };
+      };
+      put(channelIdx, s.channel!.trim());
+      put(nameIdx, s.storeName!.trim());
+      put(codeIdx, code);
+      put(statusIdx, normaliseStatus(s.status!));
+      const u = (s.uid ?? '').trim();
+      if (u) put(uidIdx, u);
+      added.push(code);
+    }
+
+    if (added.length === 0) {
+      // Nothing to write — don't touch SharePoint at all.
+      return NextResponse.json({ ok: true, added: 0, skipped, alreadyPresent: true });
+    }
+
     // Always re-encode: the UID column may have widened the range even when the
-    // new row still falls inside the existing row bounds.
-    if (newRowNum > range.e.r) range.e.r = newRowNum;
+    // new rows still fall inside the existing row bounds.
+    if (nextRow > range.e.r) range.e.r = nextRow;
     if (uidIdx > range.e.c) range.e.c = uidIdx;
     ws['!ref'] = XLSX.utils.encode_range(range);
 
-    // Write back to SharePoint
+    // Write back to SharePoint — one upload for the whole batch
     const outArr = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
     await uploadSpFile(
       excelPath,
@@ -239,7 +283,12 @@ export async function PATCH(req: NextRequest) {
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
 
-    return NextResponse.json({ ok: true, storeCount: rows.length + 1 });
+    return NextResponse.json({
+      ok: true,
+      added: added.length,
+      skipped,
+      storeCount: rows.length + added.length,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('Visit report control PATCH error:', msg);
