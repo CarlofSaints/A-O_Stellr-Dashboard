@@ -27,6 +27,8 @@ interface ControlPayload {
   updatedAt: string;
   updatedBy: string;
   stores: CtrlStore[];
+  source?: 'excel' | 'legacy-json'; // 'legacy-json' = live Excel unreachable, data is stale
+  warning?: string;
 }
 
 interface Visit {
@@ -1659,6 +1661,13 @@ export default function VisitReportPage() {
                           {filteredExceptions.length} visits from {new Set(filteredExceptions.map(e => e.storeCode)).size} unique stores not in the Site Control File
                         </span>
                       </p>
+                      {control?.source === 'legacy-json' && (
+                        <p className="mt-1.5 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+                          <strong>Stale data:</strong> the live SharePoint control file could not be read, so this list
+                          was built from an old snapshot and may be wrong. Adding stores will fail until it is fixed.
+                          {control.warning ? <span className="block mt-0.5 font-mono text-[10px] text-red-500">{control.warning}</span> : null}
+                        </p>
+                      )}
                     </div>
                     <div style={{ overflowX: 'auto', maxHeight: '50vh', overflowY: 'auto' }}>
                       <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: exCw.num + exCw.ch + exCw.code + exCw.name + exCw.uuid + exCw.date + exCw.action }}>

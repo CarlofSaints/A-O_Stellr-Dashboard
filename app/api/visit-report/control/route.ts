@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchSpFile, uploadSpFile, deleteSpFile } from '@/lib/graph-oj';
+import { fetchSpFile, uploadSpFile, deleteSpFile, listSpFolder } from '@/lib/graph-oj';
 import * as XLSX from 'xlsx';
 
 export const dynamic = 'force-dynamic';
@@ -21,6 +21,10 @@ interface ControlPayload {
   updatedAt: string;
   updatedBy: string;
   stores: Store[];
+  /** Where the data actually came from — 'legacy-json' means the live Excel was unreachable */
+  source?: 'excel' | 'legacy-json';
+  /** Human-readable reason the Excel could not be read, when source is 'legacy-json' */
+  warning?: string;
 }
 
 function getBasePath(): string {
@@ -33,15 +37,45 @@ function controlFilePath(): string {
   return `${getBasePath()}/visit-report-control.json`;
 }
 
-/** Path to the master Excel control file in SP */
-function controlExcelPath(): string {
+const CONTROL_FILE_NAME = 'Store Control File- Stellr v3.xlsx';
+
+/** Folder holding the master Excel control file in SP */
+function controlExcelDir(): string {
   const imagesBase = (process.env.AO_SP_IMAGES_BASE_PATH ?? '').replace(/\/$/, '');
   if (!imagesBase) throw new Error('AO_SP_IMAGES_BASE_PATH not configured');
-  // Find "2. EXTERNAL SYNC" segment, then append CONTROL FILES/...
+  // Find "2. EXTERNAL SYNC" segment, then append PERIGEE DATA/CONTROL FILES
   const idx = imagesBase.indexOf('2. EXTERNAL SYNC');
   if (idx === -1) throw new Error('Could not find "2. EXTERNAL SYNC" in AO_SP_IMAGES_BASE_PATH');
   const syncRoot = imagesBase.substring(0, idx + '2. EXTERNAL SYNC'.length);
-  return `${syncRoot}/CONTROL FILES/Store Control File- Stellr v3.xlsx`;
+  return `${syncRoot}/PERIGEE DATA/CONTROL FILES`;
+}
+
+/** Path to the master Excel control file in SP */
+function controlExcelPath(): string {
+  return `${controlExcelDir()}/${CONTROL_FILE_NAME}`;
+}
+
+/**
+ * Fetch the control workbook, tolerating a version rename (v3 -> v4).
+ * Tries the known filename first; on failure falls back to the most recently
+ * modified "*Control File*Stellr*.xlsx" in the CONTROL FILES folder, so a
+ * rename degrades to a logged warning instead of a silent 404.
+ * Returns the path actually used — writes must go back to the same file.
+ */
+async function fetchControlExcel(): Promise<{ buf: ArrayBuffer; path: string }> {
+  const exact = controlExcelPath();
+  try {
+    return { buf: await fetchSpFile(exact), path: exact };
+  } catch (err) {
+    const dir = controlExcelDir();
+    const match = (await listSpFolder(dir))
+      .filter(e => e.isFile && !e.name.startsWith('~$') && /control file.*stellr.*\.xlsx?$/i.test(e.name))
+      .sort((a, b) => b.lastModifiedDateTime.localeCompare(a.lastModifiedDateTime))[0];
+    if (!match) throw err;
+    console.warn(`Control file "${CONTROL_FILE_NAME}" not found — falling back to "${match.name}"`);
+    const resolved = `${dir}/${match.name}`;
+    return { buf: await fetchSpFile(resolved), path: resolved };
+  }
 }
 
 function normaliseStatus(raw: string): StoreStatus {
@@ -87,22 +121,28 @@ function parseExcelToStores(buf: ArrayBuffer): Store[] {
 // GET — read directly from the SharePoint Excel control file
 export async function GET() {
   try {
-    const buf = await fetchSpFile(controlExcelPath());
+    const { buf } = await fetchControlExcel();
     const stores = parseExcelToStores(buf);
 
     const payload: ControlPayload = {
       updatedAt: new Date().toISOString(),
       updatedBy: 'SharePoint Excel',
       stores,
+      source: 'excel',
     };
     return NextResponse.json(payload, { headers: NO_CACHE });
   } catch (err) {
-    console.error('Visit report control GET error:', err);
-    // Fallback: try the legacy JSON file
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('Visit report control GET error:', msg);
+    // Fallback: the legacy JSON snapshot. This is NOT live data — flag it loudly,
+    // otherwise a broken Excel path shows a plausible-but-stale store list.
     try {
       const buf = await fetchSpFile(controlFilePath());
       const data = JSON.parse(Buffer.from(buf).toString('utf-8')) as ControlPayload;
-      return NextResponse.json(data, { headers: NO_CACHE });
+      return NextResponse.json(
+        { ...data, source: 'legacy-json', warning: msg },
+        { headers: NO_CACHE },
+      );
     } catch {
       return NextResponse.json(null, { headers: NO_CACHE });
     }
@@ -127,29 +167,36 @@ export async function PATCH(req: NextRequest) {
     const normStatus = normaliseStatus(status);
     const trimmedUid = (uid ?? '').trim();
 
-    // Fetch current Excel
-    const excelPath = controlExcelPath();
-    const buf = await fetchSpFile(excelPath);
+    // Fetch current Excel — write back to whatever path it resolved to
+    const { buf, path: excelPath } = await fetchControlExcel();
     const wb = XLSX.read(buf, { type: 'array' });
     const ws = wb.Sheets[wb.SheetNames[0]];
     if (!ws) {
       return NextResponse.json({ error: 'Control Excel has no sheets' }, { status: 500 });
     }
 
-    // Determine header columns
     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' });
-    const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
-    const storeNameCol = headers.find(h => /store\s*name/i.test(h)) ?? 'Store Name';
-    const storeCodeCol = headers.find(h => /store\s*code/i.test(h)) ?? 'Store Code';
-    const channelCol = headers.find(h => /channel/i.test(h)) ?? 'Channel';
-    const statusCol = headers.find(h => /^status$/i.test(h)) ?? 'Status';
-    const uidColName = headers.find(h => /^uid$/i.test(h));
+    const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1');
 
-    // Determine the column index for UID (E = index 4, or after the last known column)
-    const uidColIdx = 4;
+    // Resolve column positions off the header row. GET matches columns by header
+    // name, so the write has to as well — assuming a fixed order puts values
+    // under the wrong headers and the store never enters the control set.
+    const headerCols: string[] = [];
+    for (let c = 0; c <= Math.max(4, range.e.c); c++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: 0, c })];
+      headerCols.push(cell && cell.v !== undefined ? String(cell.v).trim() : '');
+    }
+    const colIdx = (re: RegExp, fallback: number): number => {
+      const i = headerCols.findIndex(h => h && re.test(h));
+      return i === -1 ? fallback : i;
+    };
+    const channelIdx = colIdx(/channel/i, 0);
+    const nameIdx = colIdx(/store\s*name/i, 1);
+    const codeIdx = colIdx(/store\s*code/i, 2);
+    const statusIdx = colIdx(/^status$/i, 3);
+    let uidIdx = headerCols.findIndex(h => /^uid$/i.test(h));
 
     // Find actual last used row (don't trust !ref which may include empty trailing rows)
-    const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1');
     let lastUsedRow = 0;
     const maxCol = Math.max(4, range.e.c); // scan up to UID column too
     for (let r = range.e.r; r >= 0; r--) {
@@ -161,25 +208,28 @@ export async function PATCH(req: NextRequest) {
       if (hasData) { lastUsedRow = r; break; }
     }
 
-    // If UID header doesn't exist yet, add it to row 0
-    if (!uidColName) {
-      ws[XLSX.utils.encode_cell({ r: 0, c: uidColIdx })] = { t: 's', v: 'UID' };
-      if (range.e.c < uidColIdx) range.e.c = uidColIdx;
+    // If UID header doesn't exist yet, append it after the last used column
+    if (uidIdx === -1) {
+      uidIdx = range.e.c + 1;
+      ws[XLSX.utils.encode_cell({ r: 0, c: uidIdx })] = { t: 's', v: 'UID' };
+      range.e.c = uidIdx;
     }
 
     // Add new row right after the last used row
     const newRowNum = lastUsedRow + 1;
-    ws[XLSX.utils.encode_cell({ r: newRowNum, c: 0 })] = { t: 's', v: channel.trim() };
-    ws[XLSX.utils.encode_cell({ r: newRowNum, c: 1 })] = { t: 's', v: storeName.trim() };
-    ws[XLSX.utils.encode_cell({ r: newRowNum, c: 2 })] = { t: 's', v: storeCode.trim() };
-    ws[XLSX.utils.encode_cell({ r: newRowNum, c: 3 })] = { t: 's', v: normStatus };
-    if (trimmedUid) {
-      ws[XLSX.utils.encode_cell({ r: newRowNum, c: uidColIdx })] = { t: 's', v: trimmedUid };
-    }
-    if (newRowNum > range.e.r) {
-      range.e.r = newRowNum;
-      ws['!ref'] = XLSX.utils.encode_range(range);
-    }
+    const put = (c: number, v: string) => {
+      ws[XLSX.utils.encode_cell({ r: newRowNum, c })] = { t: 's', v };
+    };
+    put(channelIdx, channel.trim());
+    put(nameIdx, storeName.trim());
+    put(codeIdx, storeCode.trim());
+    put(statusIdx, normStatus);
+    if (trimmedUid) put(uidIdx, trimmedUid);
+    // Always re-encode: the UID column may have widened the range even when the
+    // new row still falls inside the existing row bounds.
+    if (newRowNum > range.e.r) range.e.r = newRowNum;
+    if (uidIdx > range.e.c) range.e.c = uidIdx;
+    ws['!ref'] = XLSX.utils.encode_range(range);
 
     // Write back to SharePoint
     const outArr = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;

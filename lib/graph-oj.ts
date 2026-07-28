@@ -111,6 +111,39 @@ export async function uploadSpFile(filePath: string, content: string | Buffer | 
   if (!resp.ok) throw new Error(`SP upload failed: ${resp.status} — ${filePath}`);
 }
 
+export interface SpEntry {
+  name: string;
+  isFile: boolean;
+  lastModifiedDateTime: string;
+}
+
+/**
+ * List the immediate children of a SharePoint folder.
+ * @param folderPath  Path relative to the library root, no trailing slash.
+ */
+export async function listSpFolder(folderPath: string): Promise<SpEntry[]> {
+  const token = await getAccessToken();
+  const driveId = await getDriveId(token);
+
+  const encodedPath = folderPath
+    .split('/')
+    .map(seg => encodeURIComponent(seg))
+    .join('/');
+
+  const resp = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedPath}:/children?$select=name,file,lastModifiedDateTime&$top=999`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+
+  if (!resp.ok) throw new Error(`SP folder list failed: ${resp.status} — ${folderPath}`);
+  const data = await resp.json();
+  return (data.value as { name: string; file?: unknown; lastModifiedDateTime: string }[]).map(e => ({
+    name: e.name,
+    isFile: e.file !== undefined,
+    lastModifiedDateTime: e.lastModifiedDateTime,
+  }));
+}
+
 /**
  * Delete a file from SharePoint. Returns true if deleted, false if it didn't exist.
  */
