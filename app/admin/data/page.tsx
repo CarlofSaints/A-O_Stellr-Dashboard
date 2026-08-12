@@ -3,6 +3,7 @@
 import { Fragment, useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import type { FormType, ParseResult, VisitRow, LoadedFile } from '@/lib/types';
+import { resolveFormType } from '@/lib/formType';
 
 const FORM_TYPE_LABELS: Record<FormType, string> = {
   'merch': 'Merch Form',
@@ -477,7 +478,7 @@ export default function AdminDataPage() {
                                       {f.rowCount.toLocaleString()} rows
                                     </span>
                                     <select
-                                      value={f.formType ?? 'merch'}
+                                      value={resolveFormType(f)}
                                       disabled={retagging === `${ch.name}|${f.name}`}
                                       onChange={e => retagFile(ch.name, f.name, e.target.value as FormType)}
                                       className="px-2 py-1 border border-gray-300 rounded bg-white text-xs focus:outline-none focus:border-[#1B3A6B] disabled:opacity-50"
@@ -486,10 +487,24 @@ export default function AdminDataPage() {
                                         <option key={ft} value={ft}>{FORM_TYPE_LABELS[ft]}</option>
                                       ))}
                                     </select>
-                                    <span className="w-12 text-[10px] text-gray-400">
+                                    {/* Say so when the stored tag was overridden, rather than
+                                        quietly showing a type the file isn't actually saved as. */}
+                                    <span
+                                      className={`w-20 text-[10px] ${
+                                        resolveFormType(f) !== (f.formType ?? 'merch')
+                                          ? 'text-amber-600' : 'text-gray-400'
+                                      }`}
+                                      title={
+                                        resolveFormType(f) !== (f.formType ?? 'merch')
+                                          ? `Stored as ${FORM_TYPE_LABELS[f.formType ?? 'merch']}; reclassified from the file's own content. Pick a type here to make it stick.`
+                                          : undefined
+                                      }
+                                    >
                                       {retagging === `${ch.name}|${f.name}`
                                         ? 'Saving…'
-                                        : f.formTypeSource === 'manual' ? 'set' : 'auto'}
+                                        : f.formTypeSource === 'manual' ? 'set'
+                                        : resolveFormType(f) !== (f.formType ?? 'merch') ? 'auto-fixed'
+                                        : 'auto'}
                                     </span>
                                   </div>
                                 ))}
