@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { Fragment, useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import type { FormType, ParseResult, VisitRow, LoadedFile } from '@/lib/types';
 
@@ -50,6 +50,10 @@ export default function AdminDataPage() {
   const [reports, setReports] = useState<UploadReport[]>([]);
   const [resetting, setResetting] = useState<string | null>(null);
   const [formTypeOverride, setFormTypeOverride] = useState<FormType | 'auto'>('auto');
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [channelFiles, setChannelFiles] = useState<Record<string, LoadedFile[]>>({});
+  const [filesLoading, setFilesLoading] = useState<string | null>(null);
+  const [retagging, setRetagging] = useState<string | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -207,6 +211,53 @@ export default function AdminDataPage() {
       setResetting(null);
     }
   }, [refreshIndex]);
+
+  // ─── Per-channel file list + form-type retag ───────────────────────────────
+  // Upload-time detection keys on the filename and on marker headers, and a form
+  // carrying neither is filed as Merch — its columns then appear on the merch
+  // grid. Re-uploading to correct that needs the original Excel, so the tag is
+  // editable here instead.
+  const toggleChannelFiles = useCallback(async (channel: string) => {
+    setExpanded(prev => (prev === channel ? null : channel));
+    if (channelFiles[channel]) return; // already fetched
+    setFilesLoading(channel);
+    try {
+      const res = await fetch(`/api/sp-cache?channel=${encodeURIComponent(channel)}`, { cache: 'no-store' });
+      const data = await res.json() as { files?: LoadedFile[] };
+      setChannelFiles(prev => ({ ...prev, [channel]: data?.files ?? [] }));
+    } catch {
+      setChannelFiles(prev => ({ ...prev, [channel]: [] }));
+    } finally {
+      setFilesLoading(null);
+    }
+  }, [channelFiles]);
+
+  const retagFile = useCallback(async (channel: string, name: string, formType: FormType) => {
+    setRetagging(`${channel}|${name}`);
+    try {
+      const res = await fetch('/api/sp-cache', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel, name, formType, updatedBy: session?.name }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(`Could not change the form type: ${json.error ?? res.statusText}`);
+        return;
+      }
+      setChannelFiles(prev => ({
+        ...prev,
+        [channel]: (prev[channel] ?? []).map(f =>
+          f.name === name ? { ...f, formType, formTypeSource: 'manual' as const } : f
+        ),
+      }));
+      await refreshIndex();
+    } catch (err) {
+      alert(`Could not change the form type: ${err instanceof Error ? err.message : 'unknown error'}`);
+    } finally {
+      setRetagging(null);
+    }
+  }, [session, refreshIndex]);
 
   const totalFiles = index?.channels.reduce((s, c) => s + c.fileCount, 0) ?? 0;
   const totalRows  = index?.channels.reduce((s, c) => s + c.rowCount, 0) ?? 0;
@@ -379,21 +430,76 @@ export default function AdminDataPage() {
               </thead>
               <tbody>
                 {index.channels.map((ch, i) => (
-                  <tr key={i} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors">
-                    <td className="px-4 py-3 font-medium text-gray-800">{ch.name}</td>
-                    <td className="px-4 py-3 text-right text-gray-600 tabular-nums">{ch.fileCount.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-right text-gray-600 tabular-nums">{ch.rowCount.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => resetChannel(ch.name)}
-                        disabled={resetting === ch.name}
-                        className="text-xs text-red-500 border border-red-200 px-2 py-1 rounded hover:bg-red-50 transition-colors disabled:opacity-50"
-                      >
-                        {resetting === ch.name ? 'Resetting…' : 'Reset'}
-                      </button>
-                    </td>
-                  </tr>
+                  <Fragment key={i}>
+                    <tr className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors">
+                      <td className="px-4 py-3 font-medium text-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => toggleChannelFiles(ch.name)}
+                          className="flex items-center gap-1.5 hover:text-[#1B3A6B] transition-colors"
+                          aria-expanded={expanded === ch.name}
+                        >
+                          <span className="text-gray-400 text-[10px] w-2">{expanded === ch.name ? '▼' : '▶'}</span>
+                          {ch.name}
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-600 tabular-nums">{ch.fileCount.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-right text-gray-600 tabular-nums">{ch.rowCount.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          type="button"
+                          onClick={() => resetChannel(ch.name)}
+                          disabled={resetting === ch.name}
+                          className="text-xs text-red-500 border border-red-200 px-2 py-1 rounded hover:bg-red-50 transition-colors disabled:opacity-50"
+                        >
+                          {resetting === ch.name ? 'Resetting…' : 'Reset'}
+                        </button>
+                      </td>
+                    </tr>
+                    {expanded === ch.name && (
+                      <tr className="border-b border-gray-50">
+                        <td colSpan={4} className="px-4 py-3 bg-gray-50/60">
+                          {filesLoading === ch.name ? (
+                            <p className="text-xs text-gray-400 py-2">Loading files…</p>
+                          ) : !channelFiles[ch.name]?.length ? (
+                            <p className="text-xs text-gray-400 py-2">No files stored for this channel.</p>
+                          ) : (
+                            <>
+                              <p className="text-[11px] text-gray-500 mb-2">
+                                Form type decides which grid a file&apos;s columns appear on. Change it here if a
+                                file was filed under the wrong form — the change applies immediately, no re-upload.
+                              </p>
+                              <div className="space-y-1.5">
+                                {channelFiles[ch.name].map(f => (
+                                  <div key={f.name} className="flex items-center gap-3 text-xs">
+                                    <span className="flex-1 truncate text-gray-700" title={f.name}>{f.name}</span>
+                                    <span className="text-gray-400 tabular-nums w-20 text-right">
+                                      {f.rowCount.toLocaleString()} rows
+                                    </span>
+                                    <select
+                                      value={f.formType ?? 'merch'}
+                                      disabled={retagging === `${ch.name}|${f.name}`}
+                                      onChange={e => retagFile(ch.name, f.name, e.target.value as FormType)}
+                                      className="px-2 py-1 border border-gray-300 rounded bg-white text-xs focus:outline-none focus:border-[#1B3A6B] disabled:opacity-50"
+                                    >
+                                      {(Object.keys(FORM_TYPE_LABELS) as FormType[]).map(ft => (
+                                        <option key={ft} value={ft}>{FORM_TYPE_LABELS[ft]}</option>
+                                      ))}
+                                    </select>
+                                    <span className="w-12 text-[10px] text-gray-400">
+                                      {retagging === `${ch.name}|${f.name}`
+                                        ? 'Saving…'
+                                        : f.formTypeSource === 'manual' ? 'set' : 'auto'}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>

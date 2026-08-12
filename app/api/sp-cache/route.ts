@@ -309,6 +309,71 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// PATCH — retag one already-stored file's form type.
+// Detection runs once at upload from the filename and header markers, and it
+// gets it wrong for forms that carry neither (e.g. a gift-card count export
+// named "…Count…" with SKU columns instead of "Stock On Hand"). Re-uploading to
+// fix a tag needs the source Excel, which may be long gone, so the tag is
+// editable in place. A manual tag is recorded as such and never re-guessed.
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json() as {
+      channel?: string;
+      name?: string;
+      formType?: FormType;
+      updatedBy?: string;
+    };
+    const { channel, name, formType, updatedBy } = body;
+    if (!channel || !name || !formType) {
+      return NextResponse.json({ error: 'channel, name and formType are required' }, { status: 400 });
+    }
+    const VALID: FormType[] = ['merch', 'stock-count', 'stand', 'signature'];
+    if (!VALID.includes(formType)) {
+      return NextResponse.json({ error: `formType must be one of ${VALID.join(', ')}` }, { status: 400 });
+    }
+
+    const existing = await fetchJson<ChannelData>(channelPath(channel));
+    if (!existing?.files?.length) {
+      return NextResponse.json({ error: `No stored data for channel "${channel}"` }, { status: 404 });
+    }
+    const target = existing.files.find(f => f.name === name);
+    if (!target) {
+      return NextResponse.json({ error: `No file named "${name}" in channel "${channel}"` }, { status: 404 });
+    }
+
+    const previous = target.formType ?? detectFormTypeFromHeaders(target.headers);
+    target.formType = formType;
+    target.formTypeSource = 'manual';
+    await uploadSpFile(channelPath(channel), JSON.stringify(existing));
+
+    // The index caches formTypes and per-form-type header fingerprints, both of
+    // which move when a file changes bucket. Leaving them stale would keep the
+    // dashboard's channel compatibility check on the old grouping.
+    const idx = await fetchJson<IndexPayload>(indexPath());
+    if (idx) {
+      const ci = idx.channels.findIndex(c => c.name === channel);
+      if (ci >= 0) {
+        idx.channels[ci] = {
+          ...idx.channels[ci],
+          formTypes: [...new Set(existing.files.map(f =>
+            f.formType ?? detectFormTypeFromHeaders(f.headers)
+          ))] as FormType[],
+          headerFingerprints: computeFingerprints(existing.files),
+        };
+        idx.updatedAt = new Date().toISOString();
+        if (updatedBy) idx.updatedBy = updatedBy;
+        await uploadSpFile(indexPath(), JSON.stringify(idx));
+      }
+    }
+
+    return NextResponse.json({ ok: true, name, previous, formType });
+  } catch (err) {
+    console.error('SP cache PATCH error:', err);
+    const msg = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: `Retag failed: ${msg}` }, { status: 500 });
+  }
+}
+
 export async function DELETE(req: NextRequest) {
   try {
     const channel = req.nextUrl.searchParams.get('channel');

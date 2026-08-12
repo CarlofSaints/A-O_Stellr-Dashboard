@@ -24,6 +24,10 @@ export interface LoadedFile {
   uploadedBy?: string;   // user name who uploaded
   channel?: string;      // channel name (e.g. Makro, Game)
   formType?: FormType;   // auto-detected form type (default: 'merch' for backward compat)
+  /** How formType was decided. 'manual' means a human set it on the Data page and
+   *  it must never be second-guessed; anything else (including absent) is a guess
+   *  that content-based classification is allowed to correct. */
+  formTypeSource?: 'auto' | 'manual';
 }
 
 export interface SignatureRecord {
