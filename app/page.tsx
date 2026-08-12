@@ -1018,11 +1018,14 @@ export default function Dashboard() {
                   </button>
                 </div>
               </div>
+              {/* overscrollBehavior: 'contain' stops a wheel gesture that reaches the top or
+                  bottom of the grid from chaining out to the page — the page jumping away is
+                  what loses the horizontal scroll position. */}
               <div
                 ref={tableScrollRef}
                 onScroll={onTableScroll}
                 className={isFullscreen ? 'hide-x-scrollbar flex-1' : 'hide-x-scrollbar'}
-                style={{ overflowX: 'scroll', overflowY: 'auto', maxHeight: isFullscreen ? undefined : '82vh' }}
+                style={{ overflowX: 'scroll', overflowY: 'auto', overscrollBehavior: 'contain', maxHeight: isFullscreen ? undefined : '82vh' }}
               >
                 <table
                   className="text-sm border-collapse"

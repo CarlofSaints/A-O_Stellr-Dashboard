@@ -1556,7 +1556,9 @@ export default function VisitReportPage() {
                       </span>
                     </p>
                   </div>
-                  <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto', position: 'relative' }}>
+                  {/* overscrollBehavior: 'contain' keeps a wheel gesture that reaches the top
+                      or bottom of the grid from chaining out to the page. */}
+                  <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto', overscrollBehavior: 'contain', position: 'relative' }}>
                     <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: `${cw.num + cw.ch + cw.name + cw.code + cw.st + dateCols.length * 72}px` }}>
                       <thead className="sticky top-0" style={{ zIndex: 20 }}>
                         <tr>
@@ -1641,7 +1643,7 @@ export default function VisitReportPage() {
                         </span>
                       </p>
                     </div>
-                    <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto', position: 'relative' }}>
+                    <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto', overscrollBehavior: 'contain', position: 'relative' }}>
                       <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: `${cw.num + cw.ch + cw.name + cw.code + cw.st + weekCols.length * 90 + 70}px` }}>
                         <thead className="sticky top-0" style={{ zIndex: 20 }}>
                           <tr>
@@ -1772,7 +1774,7 @@ export default function VisitReportPage() {
                         </p>
                       )}
                     </div>
-                    <div style={{ overflowX: 'auto', maxHeight: '50vh', overflowY: 'auto' }}>
+                    <div style={{ overflowX: 'auto', maxHeight: '50vh', overflowY: 'auto', overscrollBehavior: 'contain' }}>
                       <table className="text-sm" style={{ borderCollapse: 'collapse', minWidth: exCw.num + exCw.ch + exCw.code + exCw.name + exCw.uuid + exCw.date + exCw.action }}>
                         <thead className="sticky top-0" style={{ zIndex: 20 }}>
                           <tr style={{ backgroundColor: '#92400e', color: '#fff' }}>
