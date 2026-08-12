@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchSpFile, uploadSpFile, deleteSpFile } from '@/lib/graph-oj';
+import { readJson } from '@/lib/blob';
 import * as XLSX from 'xlsx';
 
 export const dynamic = 'force-dynamic';
 
 const NO_CACHE = { 'Cache-Control': 'no-store, no-cache, must-revalidate' };
+
+/** The slice of config/perigee-api.json the cron stamps on every matched run. */
+const POLL_CONFIG_KEY = 'config/perigee-api.json';
+interface PollState {
+  lastCheckedAt?: string | null;
+  lastCheckResult?: string | null;
+  lastCheckSlot?: string | null;
+}
 
 interface Visit {
   storeCode: string;
@@ -77,11 +86,24 @@ function findCol(headers: string[], ...patterns: RegExp[]): string | undefined {
   return undefined;
 }
 
-// GET — return current visit data
+// GET — return current visit data, plus when the cron last *checked*.
+// `updatedAt` only moves when new visits actually arrive, so a healthy cron that
+// keeps finding nothing new is indistinguishable from a dead one without this.
 export async function GET() {
   try {
     const data = await fetchJson<DataPayload>(dataFilePath());
-    return NextResponse.json(data, { headers: NO_CACHE });
+    if (!data) return NextResponse.json(null, { headers: NO_CACHE });
+
+    const cfg = await readJson<PollState>(POLL_CONFIG_KEY, {});
+    return NextResponse.json(
+      {
+        ...data,
+        lastCheckedAt: cfg.lastCheckedAt ?? null,
+        lastCheckResult: cfg.lastCheckResult ?? null,
+        lastCheckSlot: cfg.lastCheckSlot ?? null,
+      },
+      { headers: NO_CACHE },
+    );
   } catch (err) {
     console.error('Visit report data GET error:', err);
     return NextResponse.json(null, { headers: NO_CACHE });

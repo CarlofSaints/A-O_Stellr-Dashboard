@@ -7,12 +7,34 @@ import { fetchAllPerigeeVisits, PerigeeFetchError } from '@/lib/perigeeFetch';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
+/**
+ * Poll times live in TWO places and both must agree:
+ *
+ *   vercel.json                      one cron entry per slot, e.g.
+ *                                    "/api/cron/poll-visits?slot=08:40" at "40 6 * * *"
+ *   config/perigee-schedule.json     the same times in Blob, with enabled + short/long
+ *
+ * Vercel cron schedules are UTC; South Africa is UTC+2 with no DST, so each
+ * entry is its SAST slot minus two hours, stable year-round. The ?slot= value is
+ * the SAST time and must match a schedule entry exactly.
+ *
+ * Adding or moving a poll time means editing vercel.json and redeploying.
+ * Switching one off is still just the toggle in Admin → Settings, which this
+ * route honours before doing any work.
+ */
+
 interface PerigeeConfig {
   apiKey: string;
   endpoint: string;
   enabled: boolean;
   lastPolledAt: string | null;
   requestBody: string;
+  /** Stamped on EVERY matched run, whatever the outcome. `updatedAt` on the
+   *  visits file only moves when new visits actually arrive, so on a quiet day
+   *  it looks identical to a dead cron. This is the "we did check" signal. */
+  lastCheckedAt?: string | null;
+  lastCheckResult?: string | null;
+  lastCheckSlot?: string | null;
 }
 
 interface Visit {
@@ -119,6 +141,13 @@ export async function GET(req: NextRequest) {
 
   const logEntry: CronLogEntry = { timestamp: new Date().toISOString(), matched: false };
   const forceRun = req.nextUrl.searchParams.get('force') === 'true';
+  // Each vercel.json cron entry names its own slot: ?slot=08:40. The schedule
+  // used to be rediscovered by comparing the wall clock against every slot with
+  // a ±14 min window, which meant a 30-min tick could never reach a slot at :15
+  // or :45 (both are 15 minutes from :00 and :30) and a slot at :40 ran ten
+  // minutes early off the :30 tick. Naming the slot removes the guess entirely
+  // and is immune to Vercel's minute of scheduling jitter.
+  const slotParam = req.nextUrl.searchParams.get('slot');
 
   try {
     const schedule = await readJson<PollSchedule>(SCHEDULE_KEY, { slots: [], timezone: 'Africa/Johannesburg' });
@@ -133,29 +162,29 @@ export async function GET(req: NextRequest) {
     const sastTime = new Date(now.toLocaleString('en-US', { timeZone: schedule.timezone || 'Africa/Johannesburg' }));
     const currentHour = sastTime.getHours();
     const currentMin = sastTime.getMinutes();
-    const currentMins = currentHour * 60 + currentMin;
+    const nowLabel = `${String(currentHour).padStart(2, '0')}:${String(currentMin).padStart(2, '0')}`;
 
     let matchedSlot: PollSlot | undefined;
     if (forceRun) {
       const firstEnabled = schedule.slots.find(s => s.enabled);
-      matchedSlot = {
-        id: 'manual',
-        time: `${String(currentHour).padStart(2, '0')}:${String(currentMin).padStart(2, '0')}`,
-        type: firstEnabled?.type || 'short',
-        enabled: true,
-      };
+      matchedSlot = { id: 'manual', time: nowLabel, type: firstEnabled?.type || 'short', enabled: true };
+    } else if (slotParam) {
+      const slot = schedule.slots.find(s => s.time === slotParam);
+      if (!slot) {
+        // The cron entry outlived its slot — a redeploy is needed to drop it.
+        logEntry.result = `Slot ${slotParam} is not in the schedule (stale cron entry in vercel.json)`;
+        await appendCronLog(logEntry);
+        return NextResponse.json({ ok: true, action: 'none', reason: logEntry.result });
+      }
+      if (!slot.enabled) {
+        // Settings still switches a poll off without needing a deploy.
+        logEntry.result = `Slot ${slotParam} disabled in Settings`;
+        await appendCronLog(logEntry);
+        return NextResponse.json({ ok: true, action: 'none', reason: logEntry.result });
+      }
+      matchedSlot = slot;
     } else {
-      matchedSlot = schedule.slots.find(slot => {
-        if (!slot.enabled) return false;
-        const [slotH, slotM] = slot.time.split(':').map(Number);
-        const slotMins = slotH * 60 + slotM;
-        const diff = Math.abs(currentMins - slotMins);
-        return diff <= 14;
-      });
-    }
-
-    if (!matchedSlot) {
-      logEntry.result = `No matching slot at ${String(currentHour).padStart(2, '0')}:${String(currentMin).padStart(2, '0')} SAST`;
+      logEntry.result = `No slot given at ${nowLabel} SAST — the cron entry must pass ?slot=HH:MM`;
       await appendCronLog(logEntry);
       return NextResponse.json({ ok: true, action: 'none', reason: logEntry.result });
     }
@@ -166,8 +195,23 @@ export async function GET(req: NextRequest) {
 
     // Load Perigee config
     const config = await readJson<PerigeeConfig>(CONFIG_KEY, { apiKey: '', endpoint: '', enabled: false, lastPolledAt: null, requestBody: '' });
+
+    // From here the run counts as a check — record the outcome of every exit.
+    const recordCheck = async (result: string) => {
+      try {
+        const latest = await readJson<PerigeeConfig>(CONFIG_KEY, config);
+        await writeJson(CONFIG_KEY, {
+          ...latest,
+          lastCheckedAt: new Date().toISOString(),
+          lastCheckResult: result,
+          lastCheckSlot: matchedSlot.time,
+        });
+      } catch { /* non-blocking — never fail a poll over its own bookkeeping */ }
+    };
+
     if (!config.endpoint || !config.apiKey) {
       logEntry.error = 'Perigee API not configured';
+      await recordCheck('Perigee API not configured');
       await appendCronLog(logEntry);
       return NextResponse.json({ ok: false, error: 'Not configured' }, { status: 400 });
     }
@@ -199,6 +243,7 @@ export async function GET(req: NextRequest) {
     } catch (e) {
       if (e instanceof PerigeeFetchError) {
         logEntry.error = `Perigee ${e.status}: ${e.detail.slice(0, 200)}`;
+        await recordCheck(logEntry.error);
         await appendCronLog(logEntry);
         return NextResponse.json({ ok: false, error: logEntry.error }, { status: 502 });
       }
@@ -209,6 +254,7 @@ export async function GET(req: NextRequest) {
     if (rawVisits.length === 0) {
       logEntry.result = 'No visits returned';
       logEntry.imported = 0;
+      await recordCheck('No visits returned');
       await appendCronLog(logEntry);
       return NextResponse.json({ ok: true, action: 'polled', imported: 0 });
     }
@@ -251,6 +297,7 @@ export async function GET(req: NextRequest) {
       logEntry.result = 'All duplicates';
       logEntry.imported = 0;
       logEntry.skipped = skipped;
+      await recordCheck(`No new visits (${skipped} already had)`);
       await appendCronLog(logEntry);
       return NextResponse.json({ ok: true, action: 'polled', imported: 0, skipped });
     }
@@ -267,6 +314,7 @@ export async function GET(req: NextRequest) {
     logEntry.result = 'Success';
     logEntry.imported = newVisits.length;
     logEntry.skipped = skipped;
+    await recordCheck(`Imported ${newVisits.length} new visit${newVisits.length === 1 ? '' : 's'}`);
     await appendCronLog(logEntry);
 
     return NextResponse.json({

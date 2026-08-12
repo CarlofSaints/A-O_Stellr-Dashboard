@@ -1,8 +1,10 @@
 {
   "crons": [
-    {
-      "path": "/api/cron/poll-visits",
-      "schedule": "*/30 * * * *"
-    }
+    { "path": "/api/cron/poll-visits?slot=08:00", "schedule": "0 6 * * *" },
+    { "path": "/api/cron/poll-visits?slot=08:40", "schedule": "40 6 * * *" },
+    { "path": "/api/cron/poll-visits?slot=09:00", "schedule": "0 7 * * *" },
+    { "path": "/api/cron/poll-visits?slot=11:00", "schedule": "0 9 * * *" },
+    { "path": "/api/cron/poll-visits?slot=17:00", "schedule": "0 15 * * *" },
+    { "path": "/api/cron/poll-visits?slot=18:00", "schedule": "0 16 * * *" }
   ]
 }

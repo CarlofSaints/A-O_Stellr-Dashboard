@@ -51,6 +51,11 @@ interface DataPayload {
   updatedAt: string;
   updatedBy: string;
   visits: Visit[];
+  /** When the cron last ran a poll, whatever it found. `updatedAt` only moves on
+   *  a run that imported something, so it reads stale on a quiet day. */
+  lastCheckedAt?: string | null;
+  lastCheckResult?: string | null;
+  lastCheckSlot?: string | null;
 }
 
 interface GridRow {
@@ -1363,6 +1368,16 @@ export default function VisitReportPage() {
                         );
                       })()}
                       <p>Updated {fmtTimestamp(visitData.updatedAt)} by {visitData.updatedBy}</p>
+                      {/* "Updated" is when new visits last ARRIVED. A cron that keeps
+                          finding nothing new leaves it frozen, which looks exactly like
+                          a cron that has died — so say when we last looked, too. */}
+                      {visitData.lastCheckedAt && (
+                        <p className="text-gray-400">
+                          Last checked {fmtTimestamp(visitData.lastCheckedAt)}
+                          {visitData.lastCheckSlot ? ` (${visitData.lastCheckSlot} slot)` : ''}
+                          {visitData.lastCheckResult ? ` — ${visitData.lastCheckResult}` : ''}
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <p className="text-xs text-gray-400 mb-3">No visit data uploaded yet</p>
