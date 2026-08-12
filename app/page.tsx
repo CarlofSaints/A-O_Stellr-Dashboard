@@ -55,7 +55,7 @@ const MIN_COL_W = 48;
 const HIDDEN_COLS = new Set([
   'id', 'email', 'customer', 'sync date', 'sync time', 'tag',
   'visit uuid', 'time', 'first name', 'last name', 'store code', 'rep name',
-  'stock on hand',
+  'stock on hand', 'province',
 ]);
 
 const SECTION_PREFIXES = ['staff', 'training stuff', 'media', 'stock', 'line management'];
@@ -101,6 +101,12 @@ function getRepName(row: VisitRow): string {
 
 function unique(arr: string[]): string[] {
   return [...new Set(arr.filter(Boolean))].sort();
+}
+
+/** Dedupe keeping first-seen order. Column lists must not be sorted — the grid
+ *  is meant to read in the same sequence as the form the data came off. */
+function uniqueOrdered(arr: string[]): string[] {
+  return [...new Set(arr.filter(Boolean))];
 }
 
 /**
@@ -441,19 +447,23 @@ export default function Dashboard() {
     }
   }, [allFormTypes, selFormType]);
 
-  // Files filtered to selected form type only
+  // Files filtered to selected form type only.
+  // A file saved before formType existed has none — fall back to detectFormType
+  // (the same call the file list makes), NOT to 'merch'. Defaulting to 'merch'
+  // put every legacy stock-count/stand file in the merch set, so its columns
+  // leaked into the merch grid.
   const formFilteredFiles = useMemo(
-    () => loadedFiles.filter(f => (f.formType ?? 'merch') === selFormType),
+    () => loadedFiles.filter(f => (f.formType ?? detectFormType(f.headers)) === selFormType),
     [loadedFiles, selFormType]
   );
 
   // Merged dataset (from form-filtered files only → clean column list per form type)
   const mergedData = useMemo(() => {
     if (formFilteredFiles.length === 0) return null;
-    const headers = unique(formFilteredFiles.flatMap(f => f.headers));
-    const imageColumns = unique(formFilteredFiles.flatMap(f => f.imageColumns));
+    const headers = uniqueOrdered(formFilteredFiles.flatMap(f => f.headers));
+    const imageColumns = uniqueOrdered(formFilteredFiles.flatMap(f => f.imageColumns));
     const rows: VisitRow[] = formFilteredFiles.flatMap(f =>
-      f.rows.map(r => ({ ...r, _source: f.name, _formType: f.formType ?? 'merch' } as VisitRow))
+      f.rows.map(r => ({ ...r, _source: f.name, _formType: f.formType ?? detectFormType(f.headers) } as VisitRow))
     );
 
     // Inject signature data by matching Visit UUID
@@ -504,12 +514,16 @@ export default function Dashboard() {
     if (!mergedData) return [];
     const channelLow = channelCol?.toLowerCase();
     const storeLow   = storeCol?.toLowerCase();
-    const nonImage   = mergedData.headers.filter(h => {
+    // Keep source order — image columns stay where the form put them rather than
+    // being collected onto the right-hand end of the grid.
+    const visible = (h: string) => {
       const low = h.toLowerCase();
-      return !mergedData.imageColumns.includes(h) && !isHiddenCol(h) && low !== channelLow && low !== storeLow;
-    });
-    const imgCols = mergedData.imageColumns.filter(h => !isHiddenCol(h));
-    return [...nonImage, ...imgCols];
+      return !isHiddenCol(h) && low !== channelLow && low !== storeLow;
+    };
+    const cols = mergedData.headers.filter(visible);
+    // An image column that never made it into headers would otherwise disappear.
+    const orphanImages = mergedData.imageColumns.filter(h => visible(h) && !cols.includes(h));
+    return [...cols, ...orphanImages];
   }, [mergedData, channelCol, storeCol]);
 
   // Total table width (for table-layout: fixed)
