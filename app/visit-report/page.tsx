@@ -759,15 +759,31 @@ export default function VisitReportPage() {
 
   const hasData = storeGroups.length > 0;
 
-  const allChannels = useMemo(
-    () => unique(storeGroups.map(g => g.channel)),
-    [storeGroups]
-  );
-
   const allStatuses = useMemo(
     () => unique(storeGroups.map(g => g.status)),
     [storeGroups]
   );
+
+  // Channel options follow the Status filter (which defaults to ACTIVE below).
+  // A channel whose stores are all CLOSED / NOT IN CYCLE would otherwise sit in
+  // the list and select nothing.
+  const allChannels = useMemo(() => {
+    const stSet = selStatuses.length > 0 ? new Set(selStatuses) : null;
+    return unique(
+      storeGroups.filter(g => !stSet || stSet.has(g.status)).map(g => g.channel)
+    );
+  }, [storeGroups, selStatuses]);
+
+  // Drop channel selections the Status filter no longer offers — a checked box
+  // that isn't rendered still filters the grid, with nothing on screen to undo it.
+  useEffect(() => {
+    setSelChannels(prev => {
+      if (prev.length === 0) return prev;
+      const avail = new Set(allChannels);
+      const next = prev.filter(c => avail.has(c));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [allChannels]);
 
   // Default to showing only ACTIVE stores when multiple statuses exist
   useEffect(() => {
