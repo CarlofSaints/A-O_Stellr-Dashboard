@@ -61,6 +61,9 @@ interface DataPayload {
 interface GridRow {
   storeName: string;
   storeCode: string;
+  /** The group's raw store codes, kept so the export can rebuild any column
+   *  the on-screen grid was too big to draw. */
+  codes: string[];
   channel: string;
   status: string;
   visits: Record<string, boolean>;
@@ -110,9 +113,19 @@ const MIN_RANGE_YEAR = 2000;
 const MAX_RANGE_YEAR = 2100;
 const MIN_RANGE_DATE = `${MIN_RANGE_YEAR}-01-01`;
 const MAX_RANGE_DATE = `${MAX_RANGE_YEAR}-12-31`;
-/** Hard backstop on the daily grid — 400 days is already ~574k cells here. */
-const MAX_RANGE_DAYS = 400;
-const MAX_RANGE_WEEKS = Math.ceil(MAX_RANGE_DAYS / 7) + 1;
+/**
+ * Render caps. The binding constraint is DOM size, not the loop: the grid draws
+ * one cell per store per column and there are ~1,436 stores, so every extra day
+ * column costs ~1,400 <td>s. A quarter of days (~132k cells) and 60 weeks
+ * (~93k) are about as far as the browser stays responsive. Totals are counted
+ * separately and always cover the full range — see visitDatesByStore.
+ */
+const MAX_RANGE_DAYS = 92;
+const MAX_RANGE_WEEKS = 60;
+/** Excel has no such limit and the export is what the client actually receives,
+ *  so it is built from the full range. These only stop a runaway loop. */
+const MAX_EXPORT_DAYS = 1200;
+const MAX_EXPORT_WEEKS = 200;
 
 function parseRangeDate(s: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
@@ -123,12 +136,12 @@ function parseRangeDate(s: string): Date | null {
   return d;
 }
 
-function makeDateRange(from: string, to: string): string[] {
+function makeDateRange(from: string, to: string, maxDays: number): string[] {
   const d = parseRangeDate(from);
   const end = parseRangeDate(to);
   if (!d || !end) return [];
   const dates: string[] = [];
-  while (d <= end && dates.length < MAX_RANGE_DAYS) {
+  while (d <= end && dates.length < maxDays) {
     dates.push(isoDate(d));
     d.setDate(d.getDate() + 1);
   }
@@ -156,6 +169,49 @@ function weeksInRange(from: string, to: string): number {
   const t = new Date(to + 'T00:00:00');
   const days = Math.max(1, Math.round((t.getTime() - f.getTime()) / 86400000) + 1);
   return Math.ceil(days / 7);
+}
+
+/** Week columns spanning the range, Monday-to-Sunday. Shared by the on-screen
+ *  grid (capped short) and the Excel export (effectively uncapped). */
+function buildWeekCols(from: string, to: string, maxWeeks: number): WeekCol[] {
+  const f = parseRangeDate(from);
+  const t = parseRangeDate(to);
+  if (!f || !t) return [];
+  const firstMon = new Date(FIRST_MONDAY);
+
+  // Monday of the week containing `from`
+  const fromDay = f.getDay();
+  const fromMon = new Date(f);
+  fromMon.setDate(fromMon.getDate() - (fromDay === 0 ? 6 : fromDay - 1));
+
+  // Sunday of the week containing `to`
+  const toDay = t.getDay();
+  const toSun = new Date(t);
+  toSun.setDate(toSun.getDate() + (toDay === 0 ? 0 : 7 - toDay));
+
+  const weeks: WeekCol[] = [];
+  const d = new Date(fromMon);
+  while (d <= toSun && weeks.length < maxWeeks) {
+    const mon = new Date(d);
+    const sun = new Date(d);
+    sun.setDate(sun.getDate() + 6);
+
+    const wkNum = Math.floor((mon.getTime() - firstMon.getTime()) / (7 * 86400000)) + 1;
+    const monDD = String(mon.getDate()).padStart(2, '0');
+    const monMM = String(mon.getMonth() + 1).padStart(2, '0');
+    const sunDD = String(sun.getDate()).padStart(2, '0');
+    const sunMM = String(sun.getMonth() + 1).padStart(2, '0');
+
+    weeks.push({
+      weekNum: wkNum,
+      monIso: isoDate(mon),
+      sunIso: isoDate(sun),
+      line1: `WK-${wkNum}`,
+      line2: `${monDD}/${monMM} - ${sunDD}/${sunMM}`,
+    });
+    d.setDate(d.getDate() + 7);
+  }
+  return weeks;
 }
 
 function monthsInRange(from: string, to: string): number {
@@ -839,11 +895,13 @@ export default function VisitReportPage() {
     return labels.sort();
   }, [storeGroups, selChannels, allChannels, selStatuses]);
 
-  // Date columns
-  const dateCols = useMemo(
-    () => dateFrom && dateTo ? makeDateRange(dateFrom, dateTo) : [],
+  // Date columns. `dateColsFull` is the real range and feeds the Excel export;
+  // `dateCols` is only what the browser will draw without seizing up.
+  const dateColsFull = useMemo(
+    () => dateFrom && dateTo ? makeDateRange(dateFrom, dateTo, MAX_EXPORT_DAYS) : [],
     [dateFrom, dateTo]
   );
+  const dateCols = useMemo(() => dateColsFull.slice(0, MAX_RANGE_DAYS), [dateColsFull]);
 
   /** Say out loud when a range was rejected or cut short. Silently rendering a
    *  shorter grid than the dates claim is how a stale store list went unnoticed
@@ -858,7 +916,7 @@ export default function VisitReportPage() {
     if (t < f) return 'Date To is before Date From, so there is nothing to show.';
     const totalDays = Math.round((t.getTime() - f.getTime()) / 86400000) + 1;
     if (totalDays > MAX_RANGE_DAYS) {
-      return `That range is ${totalDays.toLocaleString()} days. The daily grid shows the first ${MAX_RANGE_DAYS} (to ${dateCols[dateCols.length - 1]}) — narrow the range to see the rest.`;
+      return `That range is ${totalDays.toLocaleString()} days. The daily grid shows the first ${MAX_RANGE_DAYS} (to ${dateCols[dateCols.length - 1]}) and the week grid the first ${MAX_RANGE_WEEKS} weeks. Channel Summary and Total counts still cover the whole range.`;
     }
     return null;
   }, [dateFrom, dateTo, dateCols]);
@@ -868,6 +926,21 @@ export default function VisitReportPage() {
     const set = new Set<string>();
     for (const v of visitData?.visits ?? []) set.add(`${v.storeCode}|${v.date}`);
     return set;
+  }, [visitData]);
+
+  /** Distinct visit dates per store. Counting used to walk every column of the
+   *  daily grid, which tied the totals to how much of the range we render —
+   *  cap the columns and the Channel Summary would quietly under-report. This
+   *  is keyed off the visits themselves, so the totals always cover the full
+   *  requested range no matter how much of it fits on screen. */
+  const visitDatesByStore = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    for (const v of visitData?.visits ?? []) {
+      let s = m.get(v.storeCode);
+      if (!s) { s = new Set(); m.set(v.storeCode, s); }
+      s.add(v.date);
+    }
+    return m;
   }, [visitData]);
 
   // Grid rows (daily) — one row per deduplicated store group
@@ -883,16 +956,23 @@ export default function VisitReportPage() {
       if (!chSet.has(g.channel)) continue;
       if (statusSet && !statusSet.has(g.status)) continue;
       if (stSet && !stSet.has(`${g.storeName} (${g.storeCodes[0]})`)) continue;
+      // Rendered cells: only the columns the grid actually shows.
       const visits: Record<string, boolean> = {};
-      let visitCount = 0;
       for (const d of dateCols) {
-        const has = g.storeCodes.some(code => visitSet.has(`${code}|${d}`));
-        visits[d] = has;
-        if (has) visitCount++;
+        visits[d] = g.storeCodes.some(code => visitSet.has(`${code}|${d}`));
       }
+      // Counted days: the WHOLE requested range, independent of the columns.
+      const counted = new Set<string>();
+      for (const code of g.storeCodes) {
+        for (const d of visitDatesByStore.get(code) ?? []) {
+          if (d >= dateFrom && d <= dateTo) counted.add(d);
+        }
+      }
+      const visitCount = counted.size;
       rows.push({
         storeName: g.storeName,
         storeCode: g.storeCodes.join(' / '),
+        codes: g.storeCodes,
         channel: g.channel,
         status: g.status,
         visits,
@@ -901,7 +981,7 @@ export default function VisitReportPage() {
     }
     rows.sort((a, b) => a.channel.localeCompare(b.channel) || a.storeName.localeCompare(b.storeName));
     return rows;
-  }, [hasData, storeGroups, selChannels, selStores, selStatuses, allChannels, filteredStoreLabels.length, dateCols, visitSet]);
+  }, [hasData, storeGroups, selChannels, selStores, selStatuses, allChannels, filteredStoreLabels.length, dateCols, visitSet, visitDatesByStore, dateFrom, dateTo]);
 
   // Channel summary — base store count from deduplicated groups
   const channelSummary = useMemo(() => {
@@ -953,46 +1033,11 @@ export default function VisitReportPage() {
 
   // ─── Week columns & week grid rows ─────────────────────────────────────────
 
-  const weekCols = useMemo((): WeekCol[] => {
-    const from = parseRangeDate(dateFrom);
-    const to = parseRangeDate(dateTo);
-    if (!from || !to) return [];
-    const firstMon = new Date(FIRST_MONDAY);
-
-    // Monday of the week containing `from`
-    const fromDay = from.getDay();
-    const fromMon = new Date(from);
-    fromMon.setDate(fromMon.getDate() - (fromDay === 0 ? 6 : fromDay - 1));
-
-    // Sunday of the week containing `to`
-    const toDay = to.getDay();
-    const toSun = new Date(to);
-    toSun.setDate(toSun.getDate() + (toDay === 0 ? 0 : 7 - toDay));
-
-    const weeks: WeekCol[] = [];
-    const d = new Date(fromMon);
-    while (d <= toSun && weeks.length < MAX_RANGE_WEEKS) {
-      const mon = new Date(d);
-      const sun = new Date(d);
-      sun.setDate(sun.getDate() + 6);
-
-      const wkNum = Math.floor((mon.getTime() - firstMon.getTime()) / (7 * 86400000)) + 1;
-      const monDD = String(mon.getDate()).padStart(2, '0');
-      const monMM = String(mon.getMonth() + 1).padStart(2, '0');
-      const sunDD = String(sun.getDate()).padStart(2, '0');
-      const sunMM = String(sun.getMonth() + 1).padStart(2, '0');
-
-      weeks.push({
-        weekNum: wkNum,
-        monIso: isoDate(mon),
-        sunIso: isoDate(sun),
-        line1: `WK-${wkNum}`,
-        line2: `${monDD}/${monMM} - ${sunDD}/${sunMM}`,
-      });
-      d.setDate(d.getDate() + 7);
-    }
-    return weeks;
-  }, [dateFrom, dateTo]);
+  const weekColsFull = useMemo(
+    () => buildWeekCols(dateFrom, dateTo, MAX_EXPORT_WEEKS),
+    [dateFrom, dateTo]
+  );
+  const weekCols = useMemo(() => weekColsFull.slice(0, MAX_RANGE_WEEKS), [weekColsFull]);
 
   // Map: storeCode → weekNum → visitCount
   const weekVisitMap = useMemo(() => {
@@ -1014,28 +1059,33 @@ export default function VisitReportPage() {
     const stSet = selStores.length > 0 && selStores.length < filteredStoreLabels.length
       ? new Set(selStores) : null;
 
-    const rows: { storeName: string; storeCode: string; channel: string; status: string; weekVisits: Record<number, number>; total: number }[] = [];
+    const rows: { storeName: string; storeCode: string; codes: string[]; channel: string; status: string; weekVisits: Record<number, number>; total: number }[] = [];
     for (const g of storeGroups) {
       if (!chSet.has(g.channel)) continue;
       if (statusSet && !statusSet.has(g.status)) continue;
       if (stSet && !stSet.has(`${g.storeName} (${g.storeCodes[0]})`)) continue;
-      // Aggregate week visits across all codes in the group
+      // Aggregate week visits across all codes in the group. Cells come from the
+      // weeks we draw; the Total is summed over every week in the range so it
+      // never depends on how much of the grid fitted on screen.
       const weekVisits: Record<number, number> = {};
-      let total = 0;
       for (const wc of weekCols) {
         let cnt = 0;
         for (const code of g.storeCodes) {
-          const sw = weekVisitMap.get(code);
-          cnt += sw?.get(wc.weekNum) ?? 0;
+          cnt += weekVisitMap.get(code)?.get(wc.weekNum) ?? 0;
         }
         weekVisits[wc.weekNum] = cnt;
-        total += cnt;
       }
-      rows.push({ storeName: g.storeName, storeCode: g.storeCodes.join(' / '), channel: g.channel, status: g.status, weekVisits, total });
+      let total = 0;
+      for (const wc of weekColsFull) {
+        for (const code of g.storeCodes) {
+          total += weekVisitMap.get(code)?.get(wc.weekNum) ?? 0;
+        }
+      }
+      rows.push({ storeName: g.storeName, storeCode: g.storeCodes.join(' / '), codes: g.storeCodes, channel: g.channel, status: g.status, weekVisits, total });
     }
     rows.sort((a, b) => a.channel.localeCompare(b.channel) || a.storeName.localeCompare(b.storeName));
     return rows;
-  }, [hasData, storeGroups, selChannels, selStores, selStatuses, allChannels, filteredStoreLabels.length, weekCols, weekVisitMap]);
+  }, [hasData, storeGroups, selChannels, selStores, selStatuses, allChannels, filteredStoreLabels.length, weekCols, weekColsFull, weekVisitMap]);
 
   // ─── Build workbook (shared by download + email) ────────────────────────────
 
@@ -1070,9 +1120,9 @@ export default function VisitReportPage() {
     }
 
     // Sheet 2: Daily Visit Grid
-    if (gridRows.length > 0 && dateCols.length > 0) {
+    if (gridRows.length > 0 && dateColsFull.length > 0) {
       const ws = wb.addWorksheet('Daily Visit Grid');
-      const dateHeaders = dateCols.map(d => fmtDate(d));
+      const dateHeaders = dateColsFull.map(d => fmtDate(d));
       ws.columns = [
         { header: '#', key: 'num', width: 5 },
         { header: 'Channel', key: 'channel', width: 18 },
@@ -1091,15 +1141,19 @@ export default function VisitReportPage() {
           storeCode: row.storeCode,
           status: row.status,
         };
-        for (const d of dateCols) obj[fmtDate(d)] = row.visits[d] ? '\u2713' : '';
+        // Rebuild from the store codes, not row.visits \u2014 that only holds the
+        // columns the screen drew.
+        for (const d of dateColsFull) {
+          obj[fmtDate(d)] = row.codes.some(c => visitSet.has(`${c}|${d}`)) ? '\u2713' : '';
+        }
         ws.addRow(obj);
       });
     }
 
     // Sheet 3: Week Summary (with red highlighting for zero-total stores)
-    if (weekGridRows.length > 0 && weekCols.length > 0) {
+    if (weekGridRows.length > 0 && weekColsFull.length > 0) {
       const ws = wb.addWorksheet('Week Summary');
-      const wkKeys = weekCols.map(wc => `${wc.line1} ${wc.line2}`);
+      const wkKeys = weekColsFull.map(wc => `${wc.line1} ${wc.line2}`);
       ws.columns = [
         { header: '#', key: 'num', width: 5 },
         { header: 'Channel', key: 'channel', width: 18 },
@@ -1119,8 +1173,11 @@ export default function VisitReportPage() {
           storeCode: row.storeCode,
           status: row.status,
         };
-        for (const wc of weekCols) {
-          const cnt = row.weekVisits[wc.weekNum] ?? 0;
+        // Recount per week from the store codes — row.weekVisits only covers
+        // the weeks the screen drew.
+        for (const wc of weekColsFull) {
+          let cnt = 0;
+          for (const c of row.codes) cnt += weekVisitMap.get(c)?.get(wc.weekNum) ?? 0;
           obj[`${wc.line1} ${wc.line2}`] = cnt > 0 ? cnt : '';
         }
         obj.total = row.total;
@@ -1130,7 +1187,7 @@ export default function VisitReportPage() {
           xlRow.getCell(3).font = redFont;
           xlRow.getCell(3).fill = redFill;
           // Red font + fill on Total cell (last col)
-          const totalCol = 5 + weekCols.length + 1; // num,channel,storeName,storeCode,status + weeks + total
+          const totalCol = 5 + weekColsFull.length + 1; // num,channel,storeName,storeCode,status + weeks + total
           xlRow.getCell(totalCol).font = redFont;
           xlRow.getCell(totalCol).fill = redFill;
         }
@@ -1163,7 +1220,7 @@ export default function VisitReportPage() {
     }
 
     return wb.xlsx.writeBuffer();
-  }, [channelSummary, gridRows, dateCols, weekGridRows, weekCols, filteredExceptions]);
+  }, [channelSummary, gridRows, dateColsFull, weekGridRows, weekColsFull, visitSet, weekVisitMap, filteredExceptions]);
 
   const reportFilename = `Visit Report ${dateFrom} to ${dateTo}.xlsx`;
 
