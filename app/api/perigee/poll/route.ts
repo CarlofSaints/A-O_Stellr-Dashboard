@@ -3,6 +3,7 @@ import { requireAdmin, noCacheHeaders } from '@/lib/auth';
 import { readJson, writeJson } from '@/lib/blob';
 import { fetchSpFile, uploadSpFile } from '@/lib/graph-oj';
 import { fetchAllPerigeeVisits, PerigeeFetchError } from '@/lib/perigeeFetch';
+import { mapPerigeeVisit, isUsableVisit, selectNewVisits, type Visit } from '@/lib/visitMap';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -13,14 +14,6 @@ interface PerigeeConfig {
   enabled: boolean;
   lastPolledAt: string | null;
   requestBody: string;
-}
-
-interface Visit {
-  storeCode: string;
-  storeName: string;
-  channel: string;
-  date: string;
-  visitUuid: string;
 }
 
 interface DataPayload {
@@ -48,37 +41,6 @@ async function loadExistingVisits(): Promise<DataPayload | null> {
   } catch {
     return null;
   }
-}
-
-function mapPerigeeVisit(row: Record<string, unknown>): Visit {
-  const str = (key: string) => String(row[key] ?? '').trim();
-
-  // Store name and code
-  const rawStore = str('store') || str('Store Full Name') || str('storeName') || str('place') || '';
-  const storeName = rawStore;
-  const storeCode = str('Store Code') || str('storeCode') || '';
-
-  // Channel
-  const channel = str('channel') || str('Channel') || '';
-
-  // Date — extract YYYY-MM-DD from startDateFull "2026-05-04 16:39:02" or startDate or checkInDate
-  let date = '';
-  const startDateFull = str('startDateFull');
-  if (startDateFull && startDateFull.includes(' ')) {
-    date = startDateFull.split(' ')[0];
-  } else {
-    date = str('checkInDate') || str('startDate') || str('date') || '';
-  }
-  // Convert DD/MM/YYYY → YYYY-MM-DD if needed
-  const dmyMatch = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(date);
-  if (dmyMatch) {
-    date = `${dmyMatch[3]}-${dmyMatch[2]}-${dmyMatch[1]}`;
-  }
-
-  // Visit UUID for dedup
-  const visitUuid = str('visitGuid') || str('visitsGuid') || str('guid') || str('visitId') || '';
-
-  return { storeCode, storeName, channel, date, visitUuid };
 }
 
 export async function POST(req: NextRequest) {
@@ -157,39 +119,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const mappedVisits = rawVisits
-      .map(mapPerigeeVisit)
-      .filter(v => v.storeCode && v.date);
+    const mappedVisits = rawVisits.map(mapPerigeeVisit).filter(isUsableVisit);
 
-    // Within-batch dedup by visitUuid (Perigee returns same GUID 2+ times)
-    const batchSeen = new Set<string>();
-    const dedupedBatch: Visit[] = [];
-    for (const v of mappedVisits) {
-      if (v.visitUuid) {
-        if (batchSeen.has(v.visitUuid)) continue;
-        batchSeen.add(v.visitUuid);
-      }
-      dedupedBatch.push(v);
-    }
-
-    // Load existing visits from SharePoint and cross-batch dedup
+    // De-dupe within the batch (Perigee repeats a GUID across pages) and
+    // against what SharePoint already holds.
     const existing = await loadExistingVisits();
     const existingVisits = existing?.visits ?? [];
-    const existingKeys = new Set<string>();
-    for (const v of existingVisits) {
-      if (v.visitUuid) existingKeys.add(`uuid:${v.visitUuid}`);
-      existingKeys.add(`comp:${v.storeCode}|${v.date}`);
-    }
-
-    const newVisits = dedupedBatch.filter(v => {
-      if (v.visitUuid && existingKeys.has(`uuid:${v.visitUuid}`)) return false;
-      const compKey = `comp:${v.storeCode}|${v.date}`;
-      if (existingKeys.has(compKey)) return false;
-      // Add to set so we don't add dupes within this new batch either
-      if (v.visitUuid) existingKeys.add(`uuid:${v.visitUuid}`);
-      existingKeys.add(compKey);
-      return true;
-    });
+    const newVisits = selectNewVisits(existingVisits, mappedVisits);
 
     const skippedDuplicates = mappedVisits.length - newVisits.length;
 

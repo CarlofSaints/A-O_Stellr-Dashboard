@@ -3,6 +3,7 @@ import { readJson, writeJson } from '@/lib/blob';
 import { requireAdmin } from '@/lib/auth';
 import { fetchSpFile, uploadSpFile } from '@/lib/graph-oj';
 import { fetchAllPerigeeVisits, PerigeeFetchError } from '@/lib/perigeeFetch';
+import { mapPerigeeVisit, isUsableVisit, selectNewVisits, type Visit } from '@/lib/visitMap';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -35,14 +36,6 @@ interface PerigeeConfig {
   lastCheckedAt?: string | null;
   lastCheckResult?: string | null;
   lastCheckSlot?: string | null;
-}
-
-interface Visit {
-  storeCode: string;
-  storeName: string;
-  channel: string;
-  date: string;
-  visitUuid: string;
 }
 
 interface DataPayload {
@@ -95,38 +88,6 @@ async function loadExistingVisits(): Promise<DataPayload | null> {
   } catch {
     return null;
   }
-}
-
-function mapPerigeeVisit(row: Record<string, unknown>): Visit {
-  const str = (key: string) => String(row[key] ?? '').trim();
-
-  const rawStore = str('store') || str('Store Full Name') || str('storeName') || str('place') || '';
-  let storeName = rawStore;
-  let storeCode = str('storeCode') || '';
-
-  if (!storeCode && rawStore.includes(' - ')) {
-    const lastDash = rawStore.lastIndexOf(' - ');
-    storeName = rawStore.substring(0, lastDash).trim();
-    storeCode = rawStore.substring(lastDash + 3).trim();
-  }
-
-  const channel = str('channel') || str('Channel') || '';
-
-  let date = '';
-  const startDateFull = str('startDateFull');
-  if (startDateFull && startDateFull.includes(' ')) {
-    date = startDateFull.split(' ')[0];
-  } else {
-    date = str('checkInDate') || str('startDate') || str('date') || '';
-  }
-  const dmyMatch = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(date);
-  if (dmyMatch) {
-    date = `${dmyMatch[3]}-${dmyMatch[2]}-${dmyMatch[1]}`;
-  }
-
-  const visitUuid = str('visitGuid') || str('visitsGuid') || str('guid') || str('visitId') || '';
-
-  return { storeCode, storeName, channel, date, visitUuid };
 }
 
 export async function GET(req: NextRequest) {
@@ -260,36 +221,12 @@ export async function GET(req: NextRequest) {
     }
 
     // Map and filter
-    const mappedVisits = rawVisits.map(mapPerigeeVisit).filter(v => v.storeCode && v.date);
+    const mappedVisits = rawVisits.map(mapPerigeeVisit).filter(isUsableVisit);
 
-    // Within-batch dedup by visitUuid
-    const batchSeen = new Set<string>();
-    const dedupedBatch: Visit[] = [];
-    for (const v of mappedVisits) {
-      if (v.visitUuid) {
-        if (batchSeen.has(v.visitUuid)) continue;
-        batchSeen.add(v.visitUuid);
-      }
-      dedupedBatch.push(v);
-    }
-
-    // Cross-batch dedup against existing SharePoint data
+    // De-dupe within the batch and against what SharePoint already holds.
     const existing = await loadExistingVisits();
     const existingVisits = existing?.visits ?? [];
-    const existingKeys = new Set<string>();
-    for (const v of existingVisits) {
-      if (v.visitUuid) existingKeys.add(`uuid:${v.visitUuid}`);
-      existingKeys.add(`comp:${v.storeCode}|${v.date}`);
-    }
-
-    const newVisits = dedupedBatch.filter(v => {
-      if (v.visitUuid && existingKeys.has(`uuid:${v.visitUuid}`)) return false;
-      const compKey = `comp:${v.storeCode}|${v.date}`;
-      if (existingKeys.has(compKey)) return false;
-      if (v.visitUuid) existingKeys.add(`uuid:${v.visitUuid}`);
-      existingKeys.add(compKey);
-      return true;
-    });
+    const newVisits = selectNewVisits(existingVisits, mappedVisits);
 
     const skipped = mappedVisits.length - newVisits.length;
 
