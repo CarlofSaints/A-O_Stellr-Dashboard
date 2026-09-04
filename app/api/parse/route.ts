@@ -16,7 +16,13 @@ const SECTION_HEADERS = new Set(['Media', 'Stock', 'Stock On Hand', 'Training St
  */
 function detectFormType(headers: string[], fileName: string): FormType {
   const fn = fileName.toLowerCase();
-  if (fn.includes('merc count')) return 'stock-count';
+  // The count exports stopped being named "… In Store Merc Count …" and are now
+  // just "Stellr <Chain> Count <date>.xlsx", so an exact "merc count" match
+  // stopped firing around 7 Aug 2026 and every count file since has been filed
+  // as 'merch'. That put them on the same de-dupe key as the weekly raw export,
+  // which carries the same Visit UUIDs, so each one was cut to 1-2 rows on
+  // arrival: PNP-Corporate 85 rows on 31 Jul, then 1, 1, 1. Match the word.
+  if (/\bcounts?\b/.test(fn)) return 'stock-count';
   if (/\bstands?\b/.test(fn)) return 'stand';
 
   const set = new Set(headers.map(h => h.toLowerCase().trim()));

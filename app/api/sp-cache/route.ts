@@ -96,7 +96,17 @@ function computeFingerprints(files: LoadedFile[]): Record<string, string> {
 /** Deduplicate rows by Visit UUID + formType — keeps first occurrence.
  *  Count/Stand rows from the same visit share a UUID, so formType is needed
  *  to prevent cross-form-type dedup. Legacy data without formType defaults to 'merch'. */
-function dedupeRows(existing: LoadedFile[], incoming: LoadedFile[]): LoadedFile[] {
+interface DedupeResult {
+  files: LoadedFile[];
+  /** Rows discarded because that Visit UUID is already held for this form type. */
+  skippedRows: number;
+  /** Files that contributed NOTHING and are therefore not stored at all. This
+   *  used to happen in silence: no filename in the list, no error, `added: 0`.
+   *  A whole upload could disappear and the only clue was a "0 new" note. */
+  emptied: { fileName: string; rows: number }[];
+}
+
+function dedupeRows(existing: LoadedFile[], incoming: LoadedFile[]): DedupeResult {
   const seen = new Set(
     existing.flatMap(f => {
       const ft = f.formType ?? 'merch';
@@ -107,6 +117,8 @@ function dedupeRows(existing: LoadedFile[], incoming: LoadedFile[]): LoadedFile[
     }).filter(Boolean)
   );
   const result: LoadedFile[] = [];
+  const emptied: DedupeResult['emptied'] = [];
+  let skippedRows = 0;
   for (const file of incoming) {
     const ft = file.formType ?? 'merch';
     const filtered = file.rows.filter(r => {
@@ -117,11 +129,14 @@ function dedupeRows(existing: LoadedFile[], incoming: LoadedFile[]): LoadedFile[
       seen.add(key);
       return true;
     });
+    skippedRows += file.rows.length - filtered.length;
     if (filtered.length > 0) {
       result.push({ ...file, rows: filtered, rowCount: filtered.length });
+    } else {
+      emptied.push({ fileName: file.fileName, rows: file.rows.length });
     }
   }
-  return result;
+  return { files: result, skippedRows, emptied };
 }
 
 // ─── Migration from legacy single-file cache ────────────────────────────────
@@ -260,8 +275,17 @@ export async function POST(req: NextRequest) {
     const existingFiles = existing?.files ?? [];
 
     // 2. Merge — deduplicate by Visit UUID
-    const newFiles = dedupeRows(existingFiles, files);
+    const { files: newFiles, skippedRows, emptied } = dedupeRows(existingFiles, files);
     const mergedFiles = [...existingFiles, ...newFiles];
+
+    // Say what happened in the runtime log — an upload that stores nothing is
+    // otherwise indistinguishable from one that was never sent.
+    const addedRows = newFiles.reduce((s, f) => s + f.rowCount, 0);
+    console.log(
+      `[sp-cache] ${channel}: +${addedRows} rows, ${skippedRows} already held` +
+      (emptied.length ? `, DISCARDED ENTIRELY: ${emptied.map(e => `${e.fileName} (${e.rows} rows)`).join(', ')}` : '') +
+      ` — by ${updatedBy}`
+    );
 
     // 3. Write merged channel file
     const channelData: ChannelData = { files: mergedFiles };
@@ -302,7 +326,7 @@ export async function POST(req: NextRequest) {
     }
     await uploadSpFile(indexPath(), JSON.stringify(idx));
 
-    return NextResponse.json({ ok: true, added: newFiles.reduce((s, f) => s + f.rowCount, 0) });
+    return NextResponse.json({ ok: true, added: addedRows, skipped: skippedRows, emptied });
   } catch (err) {
     console.error('SP cache POST error:', err);
     return NextResponse.json({ error: 'Cache save failed' }, { status: 500 });

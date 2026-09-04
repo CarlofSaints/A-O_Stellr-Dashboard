@@ -38,7 +38,7 @@ function stripExt(filename: string): string {
 interface UploadReport {
   fileName: string;
   formType?: FormType;
-  channels: { name: string; rows: number; added: number }[];
+  channels: { name: string; rows: number; added: number; discarded?: boolean }[];
   error?: string;
 }
 
@@ -174,6 +174,7 @@ export default function AdminDataPage() {
                 name: channel,
                 rows: rows.length,
                 added: postJson.added ?? 0,
+                discarded: (postJson.emptied?.length ?? 0) > 0,
               });
             } catch (err) {
               report.channels.push({
@@ -376,7 +377,13 @@ export default function AdminDataPage() {
                         <li key={j} className="text-xs text-gray-600 flex items-center gap-2">
                           <span className="inline-block w-2 h-2 rounded-full bg-[#1B3A6B]" />
                           <span className="font-medium text-gray-800">{c.name}</span>
-                          <span className="text-gray-400">— {c.rows} row{c.rows !== 1 ? 's' : ''} parsed, {c.added} new (rest were duplicates)</span>
+                          {c.discarded ? (
+                            <span className="text-amber-700 font-medium">
+                              — {c.rows} row{c.rows !== 1 ? 's' : ''} parsed, NOTHING STORED. Every row is already held under this form type, so the file was not saved. Check the form type selector above (a count sheet filed as Merch collides with the weekly raw export).
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">— {c.rows} row{c.rows !== 1 ? 's' : ''} parsed, {c.added} new{c.rows !== c.added ? `, ${c.rows - c.added} already held` : ''}</span>
+                          )}
                         </li>
                       ))}
                     </ul>
