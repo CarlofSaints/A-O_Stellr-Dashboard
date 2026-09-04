@@ -96,11 +96,39 @@ function fmtDate(iso: string): string {
   return `${days[d.getDay()]} ${dd}/${mm}`;
 }
 
+/**
+ * A <input type="date"> reports a COMPLETE, valid value while the year is still
+ * being typed: entering "2026" emits 0002-08-27, then 0020-, then 0202-, before
+ * it ever reaches 2026-. The first keystroke alone asked for 739,259 day
+ * columns, and the daily grid builds one cell per store per day — 1,436 stores
+ * made that a billion object properties and took the tab out with an OOM.
+ *
+ * So a date outside a sane window is treated as "not entered yet" rather than
+ * as a real bound, and the loops below can never run away regardless.
+ */
+const MIN_RANGE_YEAR = 2000;
+const MAX_RANGE_YEAR = 2100;
+const MIN_RANGE_DATE = `${MIN_RANGE_YEAR}-01-01`;
+const MAX_RANGE_DATE = `${MAX_RANGE_YEAR}-12-31`;
+/** Hard backstop on the daily grid — 400 days is already ~574k cells here. */
+const MAX_RANGE_DAYS = 400;
+const MAX_RANGE_WEEKS = Math.ceil(MAX_RANGE_DAYS / 7) + 1;
+
+function parseRangeDate(s: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(s + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  if (y < MIN_RANGE_YEAR || y > MAX_RANGE_YEAR) return null;
+  return d;
+}
+
 function makeDateRange(from: string, to: string): string[] {
+  const d = parseRangeDate(from);
+  const end = parseRangeDate(to);
+  if (!d || !end) return [];
   const dates: string[] = [];
-  const d = new Date(from + 'T00:00:00');
-  const end = new Date(to + 'T00:00:00');
-  while (d <= end) {
+  while (d <= end && dates.length < MAX_RANGE_DAYS) {
     dates.push(isoDate(d));
     d.setDate(d.getDate() + 1);
   }
@@ -131,8 +159,9 @@ function weeksInRange(from: string, to: string): number {
 }
 
 function monthsInRange(from: string, to: string): number {
-  const f = new Date(from + 'T00:00:00');
-  const t = new Date(to + 'T00:00:00');
+  const f = parseRangeDate(from);
+  const t = parseRangeDate(to);
+  if (!f || !t) return 0;
   return (t.getFullYear() - f.getFullYear()) * 12 + (t.getMonth() - f.getMonth()) + 1;
 }
 
@@ -816,6 +845,24 @@ export default function VisitReportPage() {
     [dateFrom, dateTo]
   );
 
+  /** Say out loud when a range was rejected or cut short. Silently rendering a
+   *  shorter grid than the dates claim is how a stale store list went unnoticed
+   *  here for weeks — never truncate without a visible reason. */
+  const rangeNotice = useMemo((): string | null => {
+    if (!dateFrom || !dateTo) return null;
+    const f = parseRangeDate(dateFrom);
+    const t = parseRangeDate(dateTo);
+    if (!f || !t) {
+      return `Enter a date between ${MIN_RANGE_DATE} and ${MAX_RANGE_DATE}. The grids stay empty until both dates are valid.`;
+    }
+    if (t < f) return 'Date To is before Date From, so there is nothing to show.';
+    const totalDays = Math.round((t.getTime() - f.getTime()) / 86400000) + 1;
+    if (totalDays > MAX_RANGE_DAYS) {
+      return `That range is ${totalDays.toLocaleString()} days. The daily grid shows the first ${MAX_RANGE_DAYS} (to ${dateCols[dateCols.length - 1]}) — narrow the range to see the rest.`;
+    }
+    return null;
+  }, [dateFrom, dateTo, dateCols]);
+
   // O(1) visit lookup
   const visitSet = useMemo(() => {
     const set = new Set<string>();
@@ -907,9 +954,9 @@ export default function VisitReportPage() {
   // ─── Week columns & week grid rows ─────────────────────────────────────────
 
   const weekCols = useMemo((): WeekCol[] => {
-    if (!dateFrom || !dateTo) return [];
-    const from = new Date(dateFrom + 'T00:00:00');
-    const to = new Date(dateTo + 'T00:00:00');
+    const from = parseRangeDate(dateFrom);
+    const to = parseRangeDate(dateTo);
+    if (!from || !to) return [];
     const firstMon = new Date(FIRST_MONDAY);
 
     // Monday of the week containing `from`
@@ -924,7 +971,7 @@ export default function VisitReportPage() {
 
     const weeks: WeekCol[] = [];
     const d = new Date(fromMon);
-    while (d <= toSun) {
+    while (d <= toSun && weeks.length < MAX_RANGE_WEEKS) {
       const mon = new Date(d);
       const sun = new Date(d);
       sun.setDate(sun.getDate() + 6);
@@ -1430,14 +1477,21 @@ export default function VisitReportPage() {
                     )}
                     <div>
                       <label className="block text-xs font-semibold text-gray-600 mb-1">Date From</label>
-                      <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+                      <input type="date" value={dateFrom} min={MIN_RANGE_DATE} max={MAX_RANGE_DATE}
+                        onChange={e => setDateFrom(e.target.value)}
                         className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#1B3A6B]" />
                     </div>
                     <div>
                       <label className="block text-xs font-semibold text-gray-600 mb-1">Date To</label>
-                      <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+                      <input type="date" value={dateTo} min={MIN_RANGE_DATE} max={MAX_RANGE_DATE}
+                        onChange={e => setDateTo(e.target.value)}
                         className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#1B3A6B]" />
                     </div>
+                    {rangeNotice && (
+                      <div className="w-full order-last text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                        {rangeNotice}
+                      </div>
+                    )}
                     <div className="ml-auto flex items-center gap-2">
                       <button onClick={clearFilters} className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
                         Clear Filters
