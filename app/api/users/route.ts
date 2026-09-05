@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAdmin, unauthorized } from '@/lib/auth';
 import bcrypt from 'bcryptjs';
 import { loadUsers, saveUsers } from '@/lib/userData';
 import { sendWelcomeEmail } from '@/lib/email';
@@ -6,7 +7,9 @@ import { sendWelcomeEmail } from '@/lib/email';
 export const dynamic = 'force-dynamic';
 
 // GET — list all users (no passwords)
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   const users = loadUsers();
   return NextResponse.json(users.map(({ password: _p, ...u }) => u), {
     headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
@@ -15,6 +18,8 @@ export async function GET() {
 
 // POST — create user
 export async function POST(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     const { name, email, password, isAdmin, sendEmail } = await req.json();
     if (!name || !email || !password) {

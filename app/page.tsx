@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { apiFetch } from '@/lib/apiFetch';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import type { FormType, VisitRow, LoadedFile, SignatureRecord } from '@/lib/types';
@@ -653,7 +654,7 @@ export default function Dashboard() {
     try {
       const results = await Promise.all(
         channels.map(ch =>
-          fetch(`/api/sp-cache?channel=${encodeURIComponent(ch)}`, { cache: 'no-store' })
+          apiFetch(`/api/sp-cache?channel=${encodeURIComponent(ch)}`, { cache: 'no-store' })
             .then(r => r.json() as Promise<ChannelData>)
         )
       );
@@ -682,7 +683,7 @@ export default function Dashboard() {
     autoLoaded.current = true;
     setCacheLoading(true);
     Promise.all([
-      fetch('/api/sp-cache', { cache: 'no-store' })
+      apiFetch('/api/sp-cache', { cache: 'no-store' })
         .then(r => r.json())
         .then((data: IndexPayload | null) => {
           if (data?.channels?.length) {
@@ -691,7 +692,7 @@ export default function Dashboard() {
           }
         })
         .catch(() => { /* no cache — show upload UI */ }),
-      fetch('/api/signatures', { cache: 'no-store' })
+      apiFetch('/api/signatures', { cache: 'no-store' })
         .then(r => r.json())
         .then((sigs: SignatureRecord[]) => {
           if (Array.isArray(sigs)) setSignatures(sigs);

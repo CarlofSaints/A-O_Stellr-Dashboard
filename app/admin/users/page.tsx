@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { apiFetch } from '@/lib/apiFetch';
 import { useRouter } from 'next/navigation';
 
 interface UserRecord {
@@ -54,7 +55,7 @@ export default function AdminUsersPage() {
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/users', { cache: 'no-store' });
+      const res = await apiFetch('/api/users', { cache: 'no-store' });
       setUsers(await res.json());
     } finally {
       setLoading(false);
@@ -73,7 +74,7 @@ export default function AdminUsersPage() {
     e.preventDefault();
     setAddSaving(true); setAddError('');
     try {
-      const res  = await fetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(addForm) });
+      const res  = await apiFetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(addForm) });
       const data = await res.json();
       if (!res.ok) { setAddError(data.error ?? 'Failed to create user'); return; }
       setAddForm({ name: '', email: '', password: '', isAdmin: false, sendEmail: false });
@@ -89,7 +90,7 @@ export default function AdminUsersPage() {
   // ── Delete ───────────────────────────────────────────────────────────────────
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`Remove "${name}"? This cannot be undone.`)) return;
-    await fetch(`/api/users/${id}`, { method: 'DELETE' });
+    await apiFetch(`/api/users/${id}`, { method: 'DELETE' });
     fetchUsers();
     showToast(`${name} removed`);
   };
@@ -104,7 +105,7 @@ export default function AdminUsersPage() {
     if (!modal || modal.type !== 'edit') return;
     setModalSaving(true); setModalError('');
     try {
-      const res  = await fetch(`/api/users/${modal.user.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editForm) });
+      const res  = await apiFetch(`/api/users/${modal.user.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editForm) });
       const data = await res.json();
       if (!res.ok) { setModalError(data.error ?? 'Failed to save'); return; }
       setModal(null); fetchUsers(); showToast('User updated');
@@ -127,7 +128,7 @@ export default function AdminUsersPage() {
     if (!resetForm.password) { setModalError('Password is required'); return; }
     setModalSaving(true); setModalError('');
     try {
-      const res  = await fetch(`/api/users/${modal.user.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: resetForm.password, sendEmail: resetForm.sendEmail }) });
+      const res  = await apiFetch(`/api/users/${modal.user.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: resetForm.password, sendEmail: resetForm.sendEmail }) });
       const data = await res.json();
       if (!res.ok) { setModalError(data.error ?? 'Failed to reset'); return; }
       setModal(null);
@@ -143,7 +144,7 @@ export default function AdminUsersPage() {
   const handleNotify = async (u: UserRecord) => {
     setNotifying(u.id);
     try {
-      const res = await fetch(`/api/users/${u.id}/notify`, { method: 'POST' });
+      const res = await apiFetch(`/api/users/${u.id}/notify`, { method: 'POST' });
       if (!res.ok) throw new Error();
       showToast(`Login reminder sent to ${u.email}`);
     } catch {

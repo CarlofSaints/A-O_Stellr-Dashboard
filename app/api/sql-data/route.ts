@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAdmin, unauthorized } from '@/lib/auth';
 import { fetchAndCache, cache } from '@/lib/sql-cache';
 import type { ParseResult } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   const sp       = req.nextUrl.searchParams;
   const dateFrom = sp.get('dateFrom') ?? '';
   const dateTo   = sp.get('dateTo')   ?? '';

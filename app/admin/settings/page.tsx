@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { apiFetch } from '@/lib/apiFetch';
 
 interface Session {
   id: string;
@@ -93,16 +94,8 @@ const DEFAULT_BODY = JSON.stringify({
   lateCheckinTime: '09:10',
 }, null, 2);
 
-function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  let userId = '';
-  try {
-    const raw = localStorage.getItem('ao_session');
-    if (raw) userId = JSON.parse(raw).id ?? '';
-  } catch { /* ignore */ }
-  const headers = new Headers(init.headers);
-  if (userId) headers.set('x-user-id', userId);
-  return fetch(url, { ...init, headers });
-}
+/** Was a private copy of lib/apiFetch — the same rule in a second file. */
+const authFetch = apiFetch;
 
 export default function AdminSettingsPage() {
   const [session, setSession] = useState<Session | null>(null);

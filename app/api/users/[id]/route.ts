@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAdmin, unauthorized } from '@/lib/auth';
 import bcrypt from 'bcryptjs';
 import { loadUsers, saveUsers } from '@/lib/userData';
 
 // PATCH — edit user or reset password
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   const { id } = await params;
   console.log(`[PATCH /api/users/${id}] received`);
   try {
@@ -44,7 +47,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 }
 
 // DELETE — remove user
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   const { id } = await params;
   const users  = loadUsers();
   const idx    = users.findIndex(u => u.id === id);

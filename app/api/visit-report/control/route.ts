@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireUser, requireAdmin, unauthorized } from '@/lib/auth';
 import { fetchSpFile, uploadSpFile, deleteSpFile, listSpFolder } from '@/lib/graph-oj';
 import * as XLSX from 'xlsx';
 
@@ -119,7 +120,9 @@ function parseExcelToStores(buf: ArrayBuffer): Store[] {
 }
 
 // GET — read directly from the SharePoint Excel control file
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!(await requireUser(req))) return unauthorized();
+
   try {
     const { buf } = await fetchControlExcel();
     const stores = parseExcelToStores(buf);
@@ -162,6 +165,8 @@ interface StoreInput {
 // A batch is applied in ONE fetch-modify-upload cycle: sending N single requests
 // would download and re-upload the whole workbook N times and race itself.
 export async function PATCH(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     const body = await req.json();
     const incoming: StoreInput[] = Array.isArray((body as { stores?: StoreInput[] }).stores)
@@ -310,6 +315,8 @@ export async function PATCH(req: NextRequest) {
 
 // POST — upload new control file (bulk replace — admin fallback)
 export async function POST(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
@@ -381,7 +388,9 @@ export async function POST(req: NextRequest) {
 }
 
 // DELETE — wipe control file
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     await deleteSpFile(controlFilePath());
     return NextResponse.json({ ok: true }, { headers: NO_CACHE });

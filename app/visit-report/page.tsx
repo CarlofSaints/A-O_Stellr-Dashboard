@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { apiFetch } from '@/lib/apiFetch';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import * as XLSX from 'xlsx';
@@ -565,8 +566,8 @@ export default function VisitReportPage() {
     setLoading(true);
     try {
       const [ctrlRes, dataRes] = await Promise.all([
-        fetch('/api/visit-report/control', { cache: 'no-store' }),
-        fetch('/api/visit-report/data', { cache: 'no-store' }),
+        apiFetch('/api/visit-report/control', { cache: 'no-store' }),
+        apiFetch('/api/visit-report/data', { cache: 'no-store' }),
       ]);
       const ctrlJson = await ctrlRes.json() as ControlPayload | null;
       const dataJson = await dataRes.json() as DataPayload | null;
@@ -609,7 +610,7 @@ export default function VisitReportPage() {
     setUploadError(null);
     setUploadSuccess(null);
     try {
-      const res = await fetch('/api/visit-report/control', {
+      const res = await apiFetch('/api/visit-report/control', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -715,7 +716,7 @@ export default function VisitReportPage() {
     fd.append('updatedBy', session.name);
 
     try {
-      const res = await fetch(`/api/visit-report/${type}`, { method: 'POST', body: fd });
+      const res = await apiFetch(`/api/visit-report/${type}`, { method: 'POST', body: fd });
       const json = await res.json();
       if (!res.ok) { setUploadError(json.error ?? 'Upload failed'); return; }
 
@@ -754,7 +755,7 @@ export default function VisitReportPage() {
     setUploadError(null);
     setUploadSuccess(null);
     try {
-      await fetch(`/api/visit-report/${type}`, { method: 'DELETE' });
+      await apiFetch(`/api/visit-report/${type}`, { method: 'DELETE' });
       setUploadSuccess(`${type === 'control' ? 'Control file' : 'Visit data'} deleted`);
       await loadData();
     } catch {
@@ -1269,7 +1270,7 @@ export default function VisitReportPage() {
     setEmailing(true);
     setEmailResult(null);
     try {
-      const res = await fetch('/api/visit-report/email', {
+      const res = await apiFetch('/api/visit-report/email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

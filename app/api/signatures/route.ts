@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireUser, requireAdmin, unauthorized } from '@/lib/auth';
 import {
   parseSignatureRows,
   loadSignatures,
@@ -8,7 +9,9 @@ import {
 import type { VisitRow } from '@/lib/types';
 
 /** GET — return all signature records */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!(await requireUser(req))) return unauthorized();
+
   try {
     const records = await loadSignatures();
     return NextResponse.json(records);
@@ -20,6 +23,8 @@ export async function GET() {
 
 /** POST — parse incoming rows and merge with existing signatures */
 export async function POST(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     const body = await req.json();
     const { rows, headers, updatedBy } = body as {
@@ -59,7 +64,9 @@ export async function POST(req: NextRequest) {
 }
 
 /** DELETE — clear all signature data */
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     await saveSignatures([]);
     return NextResponse.json({ cleared: true });

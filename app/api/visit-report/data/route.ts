@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireUser, requireAdmin, unauthorized } from '@/lib/auth';
 import { fetchSpFile, uploadSpFile, deleteSpFile } from '@/lib/graph-oj';
 import { readJson } from '@/lib/blob';
 import * as XLSX from 'xlsx';
@@ -89,7 +90,9 @@ function findCol(headers: string[], ...patterns: RegExp[]): string | undefined {
 // GET — return current visit data, plus when the cron last *checked*.
 // `updatedAt` only moves when new visits actually arrive, so a healthy cron that
 // keeps finding nothing new is indistinguishable from a dead one without this.
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!(await requireUser(req))) return unauthorized();
+
   try {
     const data = await fetchJson<DataPayload>(dataFilePath());
     if (!data) return NextResponse.json(null, { headers: NO_CACHE });
@@ -112,6 +115,8 @@ export async function GET() {
 
 // POST — upload visit data (append + dedup by storeCode+date)
 export async function POST(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
@@ -200,7 +205,9 @@ export async function POST(req: NextRequest) {
 }
 
 // DELETE — wipe all visit data
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     await deleteSpFile(dataFilePath());
     return NextResponse.json({ ok: true }, { headers: NO_CACHE });

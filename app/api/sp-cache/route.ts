@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireUser, requireAdmin, unauthorized } from '@/lib/auth';
 import { fetchSpFile, uploadSpFile, deleteSpFile } from '@/lib/graph-oj';
 import type { FormType, LoadedFile } from '@/lib/types';
 
@@ -232,6 +233,8 @@ async function backfillIfNeeded(idx: IndexPayload): Promise<IndexPayload> {
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
+  if (!(await requireUser(req))) return unauthorized();
+
   try {
     const channel = req.nextUrl.searchParams.get('channel');
 
@@ -259,6 +262,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     const body = await req.json() as {
       updatedBy: string;
@@ -340,6 +345,8 @@ export async function POST(req: NextRequest) {
 // fix a tag needs the source Excel, which may be long gone, so the tag is
 // editable in place. A manual tag is recorded as such and never re-guessed.
 export async function PATCH(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     const body = await req.json() as {
       channel?: string;
@@ -399,6 +406,8 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     const channel = req.nextUrl.searchParams.get('channel');
     if (!channel) {

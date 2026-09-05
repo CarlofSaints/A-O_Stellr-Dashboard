@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAdmin, unauthorized } from '@/lib/auth';
 import { loadUsers } from '@/lib/userData';
 import { sendLoginReminderEmail } from '@/lib/email';
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   const { id } = await params;
   try {
     const users = loadUsers();

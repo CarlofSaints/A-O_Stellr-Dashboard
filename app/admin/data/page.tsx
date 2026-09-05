@@ -1,6 +1,7 @@
 'use client';
 
 import { Fragment, useState, useEffect, useCallback } from 'react';
+import { apiFetch } from '@/lib/apiFetch';
 import { useRouter } from 'next/navigation';
 import type { FormType, ParseResult, VisitRow, LoadedFile } from '@/lib/types';
 import { resolveFormType } from '@/lib/formType';
@@ -68,7 +69,7 @@ export default function AdminDataPage() {
   const refreshIndex = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/sp-cache', { cache: 'no-store' });
+      const res = await apiFetch('/api/sp-cache', { cache: 'no-store' });
       const data = await res.json() as IndexPayload | null;
       setIndex(data?.channels?.length ? data : null);
     } catch {
@@ -99,7 +100,7 @@ export default function AdminDataPage() {
         // 1. Parse file
         const fd = new FormData();
         fd.append('file', file);
-        const res = await fetch('/api/parse', { method: 'POST', body: fd });
+        const res = await apiFetch('/api/parse', { method: 'POST', body: fd });
         const json = await res.json();
         if (!res.ok) throw new Error(json.error ?? 'Parse failed');
         const parsed = json as ParseResult;
@@ -110,7 +111,7 @@ export default function AdminDataPage() {
         // Signature forms go to a separate API
         if (effectiveFormType === 'signature') {
           try {
-            const postRes = await fetch('/api/signatures', {
+            const postRes = await apiFetch('/api/signatures', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -157,7 +158,7 @@ export default function AdminDataPage() {
             };
 
             try {
-              const postRes = await fetch('/api/sp-cache', {
+              const postRes = await apiFetch('/api/sp-cache', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -201,7 +202,7 @@ export default function AdminDataPage() {
     if (!confirm(`Reset "${channel}"? This will permanently delete all cached data for this channel. The raw Excel files are not affected.`)) return;
     setResetting(channel);
     try {
-      const res = await fetch(`/api/sp-cache?channel=${encodeURIComponent(channel)}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/sp-cache?channel=${encodeURIComponent(channel)}`, { method: 'DELETE' });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));
         alert(`Reset failed: ${json.error ?? res.statusText}`);
@@ -224,7 +225,7 @@ export default function AdminDataPage() {
     if (channelFiles[channel]) return; // already fetched
     setFilesLoading(channel);
     try {
-      const res = await fetch(`/api/sp-cache?channel=${encodeURIComponent(channel)}`, { cache: 'no-store' });
+      const res = await apiFetch(`/api/sp-cache?channel=${encodeURIComponent(channel)}`, { cache: 'no-store' });
       const data = await res.json() as { files?: LoadedFile[] };
       setChannelFiles(prev => ({ ...prev, [channel]: data?.files ?? [] }));
     } catch {
@@ -237,7 +238,7 @@ export default function AdminDataPage() {
   const retagFile = useCallback(async (channel: string, name: string, formType: FormType) => {
     setRetagging(`${channel}|${name}`);
     try {
-      const res = await fetch('/api/sp-cache', {
+      const res = await apiFetch('/api/sp-cache', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ channel, name, formType, updatedBy: session?.name }),

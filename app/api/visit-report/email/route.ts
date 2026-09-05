@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireUser, unauthorized } from '@/lib/auth';
 import { Resend } from 'resend';
 
 export const dynamic = 'force-dynamic';
@@ -13,6 +14,8 @@ function getResend() {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function POST(req: NextRequest) {
+  if (!(await requireUser(req))) return unauthorized();
+
   try {
     const body = await req.json();
     const { emails, filename, xlsxBase64, senderName } = body as {

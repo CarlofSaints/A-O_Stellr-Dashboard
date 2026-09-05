@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAdmin, unauthorized } from '@/lib/auth';
 import * as XLSX from 'xlsx';
 import type { FormType, ParseResult, VisitRow } from '@/lib/types';
 
@@ -56,6 +57,8 @@ function buildFolderName(rows: VisitRow[], dateHeader: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  if (!(await requireAdmin(req))) return unauthorized();
+
   try {
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
