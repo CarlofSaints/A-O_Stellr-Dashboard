@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import type { FormType, VisitRow, LoadedFile, SignatureRecord } from '@/lib/types';
 import { resolveFormType } from '@/lib/formType';
+import { isPhotoUrl } from '@/lib/photoUrl';
 
 const FORM_TYPE_LABELS: Record<FormType, string> = {
   'merch': 'Merch Form',
@@ -1121,10 +1122,9 @@ export default function Dashboard() {
                               const isImage = mergedData.imageColumns.includes(h);
                               if (isImage) {
                                 if (val && typeof val === 'string' && val.startsWith('https://')) {
-                                  // Use Perigee proxy for Perigee URLs, SP proxy for others
-                                  const isPerigee = val.startsWith('https://live.perigeeportal.co.za');
+                                  // Perigee / Field Goose links via the image proxy, anything else from SharePoint
                                   let displayUrl: string | null;
-                                  if (isPerigee) {
+                                  if (isPhotoUrl(val)) {
                                     displayUrl = `/api/image?url=${encodeURIComponent(val)}`;
                                   } else {
                                     const imgToken = extractImageToken(val);
