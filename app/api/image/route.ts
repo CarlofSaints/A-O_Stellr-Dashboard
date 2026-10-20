@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isPhotoUrl } from '@/lib/photoUrl';
 
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get('url');
 
   if (!url) return new NextResponse('Missing url param', { status: 400 });
-  if (!url.startsWith('https://live.perigeeportal.co.za')) {
+  if (!isPhotoUrl(url)) {
     return new NextResponse('Disallowed domain', { status: 403 });
   }
 

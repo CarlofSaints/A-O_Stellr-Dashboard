@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isPhotoUrl } from '@/lib/photoUrl';
 
 /**
- * Proxies Perigee image URLs and returns base64-encoded image data
+ * Proxies Perigee / Field Goose image URLs and returns base64-encoded image data
  * for embedding into jsPDF documents.
  *
  * GET /api/pdf-image?url=https://live.perigeeportal.co.za/...
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest) {
   if (!url) {
     return NextResponse.json({ error: 'Missing url param' }, { status: 400 });
   }
-  if (!url.startsWith('https://live.perigeeportal.co.za')) {
+  if (!isPhotoUrl(url)) {
     return NextResponse.json({ error: 'Disallowed domain' }, { status: 403 });
   }
 

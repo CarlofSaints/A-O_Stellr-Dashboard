@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin, unauthorized } from '@/lib/auth';
 import * as XLSX from 'xlsx';
 import type { FormType, ParseResult, VisitRow } from '@/lib/types';
+import { isPhotoUrl } from '@/lib/photoUrl';
 
 // Perigee section-header artefacts — not real data columns
 const SECTION_HEADERS = new Set(['Media', 'Stock', 'Stock On Hand', 'Training Stuff', 'Staff', 'Line Management']);
@@ -92,12 +93,12 @@ export async function POST(req: NextRequest) {
 
     const dataRows = raw.slice(1) as (string | number | null | Date)[][];
 
-    // Detect image columns — any column whose values start with the Perigee portal URL
+    // Detect image columns — any column whose values are Perigee / Field Goose photo links
     const imageCols = new Set<string>();
     for (const row of dataRows) {
       headers.forEach((h, i) => {
         const val = row[i];
-        if (typeof val === 'string' && val.startsWith('https://live.perigeeportal.co.za')) {
+        if (isPhotoUrl(val)) {
           imageCols.add(h);
         }
       });
