@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireUser, requireAdmin, unauthorized } from '@/lib/auth';
 import { fetchSpFile, uploadSpFile, deleteSpFile } from '@/lib/graph-oj';
 import type { FormType, LoadedFile } from '@/lib/types';
+import { normaliseFile } from '@/lib/photoUrl';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -244,7 +245,8 @@ export async function GET(req: NextRequest) {
       if (!data) {
         return NextResponse.json({ files: [] }, { headers: NO_CACHE });
       }
-      return NextResponse.json(data, { headers: NO_CACHE });
+      // Field Goose files stored before the upload-side fix are healed on read
+      return NextResponse.json({ ...data, files: (data.files ?? []).map(normaliseFile) }, { headers: NO_CACHE });
     }
 
     // Return index (with migration fallback)

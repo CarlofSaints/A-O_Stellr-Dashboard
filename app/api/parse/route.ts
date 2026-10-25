@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin, unauthorized } from '@/lib/auth';
 import * as XLSX from 'xlsx';
 import type { FormType, ParseResult, VisitRow } from '@/lib/types';
-import { isPhotoUrl } from '@/lib/photoUrl';
+import { isPhotoUrl, normaliseCell } from '@/lib/photoUrl';
 
 // Perigee section-header artefacts — not real data columns
 const SECTION_HEADERS = new Set(['Media', 'Stock', 'Stock On Hand', 'Training Stuff', 'Staff', 'Line Management']);
@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
       return n === 1 ? h : `${h} (${n})`;
     });
 
-    const dataRows = raw.slice(1) as (string | number | null | Date)[][];
+    const dataRows = (raw.slice(1) as (string | number | null | Date)[][]).map(r => r.map(normaliseCell));
 
     // Detect image columns — any column whose values are Perigee / Field Goose photo links
     const imageCols = new Set<string>();
