@@ -27,6 +27,12 @@ function idb<T>(fn: (s: IDBObjectStore) => IDBRequest<T>, mode: IDBTransactionMo
   });
 }
 
+/** The server's own error message when it sent one, else the status. */
+async function httpError(res: Response) {
+  const body = await res.json().catch(() => null) as { error?: string } | null;
+  return body?.error ?? `HTTP ${res.status}`;
+}
+
 async function writeFile(dir: FileSystemDirectoryHandle, name: string, data: Blob | ArrayBuffer) {
   const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
   await w.write(data);
@@ -76,7 +82,7 @@ export default function PicturesToCells({ imageUrl, logApi, access = 'private', 
   const loadLog = useCallback(async () => {
     try {
       const res = await fetch(logApi, { headers: headersRef.current(), cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await httpError(res));
       setLog(await res.json());
       setLogError('');
     } catch (e) {
@@ -89,7 +95,7 @@ export default function PicturesToCells({ imageUrl, logApi, access = 'private', 
   async function downloadExcel(entry: LogEntry) {
     try {
       const res = await fetch(`${logApi}?file=${encodeURIComponent(entry.excelPath!)}`, { headers: headersRef.current() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await httpError(res));
       const a = document.createElement('a');
       a.href = URL.createObjectURL(await res.blob());
       a.download = entry.excelName || 'pictures.xlsx';
@@ -206,7 +212,7 @@ export default function PicturesToCells({ imageUrl, logApi, access = 'private', 
           headers: { 'Content-Type': 'application/json', ...headersRef.current() },
           body: JSON.stringify({ mode, path, photos: p.photos.length, saved, excelPath, excelName }),
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) throw new Error(await httpError(res));
         setStatus(summary);
         loadLog();
       } catch (e) {

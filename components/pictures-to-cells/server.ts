@@ -64,7 +64,8 @@ export function logRoute(opts: { access: 'public' | 'private'; user: (req: Reque
       ...(isFile(excelPath) ? { excelPath, excelName: str(body.excelName) } : {}),
     };
     // One blob per run: two people finishing at once can't overwrite each other's entry.
-    await put(`${LOG}${entry.at}-${Math.random().toString(36).slice(2, 8)}.json`, JSON.stringify(entry), {
+    // Timestamp first so names sort newest-last; ':' and '.' swapped out to keep the name URL-plain.
+    await put(`${LOG}${entry.at.replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 8)}.json`, JSON.stringify(entry), {
       access: opts.access, addRandomSuffix: false, contentType: 'application/json',
     });
     return Response.json(entry);
@@ -75,17 +76,33 @@ export function logRoute(opts: { access: 'public' | 'private'; user: (req: Reque
     const file = new URL(req.url).searchParams.get('file');
     if (file) {
       if (!isFile(file)) return Response.json({ error: 'Bad path' }, { status: 400 });
-      const blob = await get(file, { access: opts.access });
+      // Read by the URL list() gives, not a URL rebuilt from the pathname.
+      const match = (await list({ prefix: file, limit: 1 })).blobs.find(b => b.pathname === file);
+      const blob = match && await get(match.url, { access: opts.access });
       if (!blob || blob.statusCode !== 200) return Response.json({ error: 'File not found' }, { status: 404 });
       return new Response(blob.stream, { headers: { 'Content-Type': blob.blob.contentType ?? 'application/octet-stream' } });
     }
     // shortcut: reads the first 1000 log blobs only; page with `cursor` past ~1000 runs.
     const { blobs } = await list({ prefix: LOG, limit: 1000 });
-    const newest = blobs.map(b => b.pathname).sort().reverse().slice(0, 100);
-    const entries = await Promise.all(newest.map(async p => {
-      const b = await get(p, { access: opts.access, useCache: false }).catch(() => null);
-      return b && b.statusCode === 200 ? (JSON.parse(await new Response(b.stream).text()) as LogEntry) : null;
+    const newest = blobs.sort((a, b) => b.pathname.localeCompare(a.pathname)).slice(0, 100);
+    const failures: string[] = [];
+    const entries = await Promise.all(newest.map(async b => {
+      try {
+        const r = await get(b.url, { access: opts.access, useCache: false });
+        if (!r || r.statusCode !== 200) throw new Error(`status ${r?.statusCode ?? 404}`);
+        return JSON.parse(await new Response(r.stream).text()) as LogEntry;
+      } catch (e) {
+        failures.push(`${b.pathname}: ${e instanceof Error ? e.message : e}`);
+        return null;
+      }
     }));
+    // Never drop an unreadable entry silently: that is what hid this when it first broke.
+    if (failures.length) {
+      console.error('[pictures-to-cells] unreadable log entries', failures);
+      if (failures.length === newest.length) {
+        return Response.json({ error: `${failures.length} log entries could not be read: ${failures[0]}` }, { status: 500 });
+      }
+    }
     return Response.json(entries.filter(Boolean), { headers: { 'Cache-Control': 'no-store' } });
   }
 
