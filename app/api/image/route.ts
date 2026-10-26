@@ -22,9 +22,8 @@ export async function GET(req: NextRequest) {
     }
 
     const contentType = upstream.headers.get('content-type') ?? 'image/jpeg';
-    const body = await upstream.arrayBuffer();
-
-    return new NextResponse(body, {
+    // Streamed, not buffered: Vercel refuses a buffered body over 4.5 MB.
+    return new NextResponse(upstream.body, {
       headers: {
         'Content-Type': contentType,
         'Cache-Control': 'public, max-age=86400',

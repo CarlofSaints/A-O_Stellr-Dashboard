@@ -65,8 +65,10 @@ export function plan(ws: ExcelJS.Worksheet): Plan {
       const url = photoUrl(c.value);
       if (!url) return;
       // One visit has many photos under the same name: number them.
-      const n = (used.get(base) ?? 0) + 1;
-      used.set(base, n);
+      // Keyed lower-case: Windows and SharePoint treat Smith_PNP and smith_PnP as one file.
+      const key = base.toLowerCase();
+      const n = (used.get(key) ?? 0) + 1;
+      used.set(key, n);
       photos.push({ row: r, col, url, fileName: `${base}_${n}.jpg` });
       photoCols.add(col);
     });
@@ -93,16 +95,19 @@ export function buildWorkbook(wb: ExcelJS.Workbook, ws: ExcelJS.Worksheet, p: Pl
     const t = thumbs.get(photo);
     if (!t) continue;
     const scale = Math.min((w - pad * 2) / t.width, (h - pad * 2) / t.height);
+    const iw = Math.round(t.width * scale), ih = Math.round(t.height * scale);
     const imageId = wb.addImage({ buffer: t.buffer as ExcelJS.Buffer, extension: 'jpeg' });
+    // Native offsets in EMU (9525 per px) to centre it; ExcelJS mis-scales fractional col/row.
+    const EMU = 9525;
     ws.addImage(imageId, {
-      tl: { col: photo.col - 1 + pad / w, row: photo.row - 1 + pad / h } as ExcelJS.Anchor,
-      ext: { width: Math.round(t.width * scale), height: Math.round(t.height * scale) },
+      tl: { nativeCol: photo.col - 1, nativeColOff: Math.round((w - iw) / 2) * EMU, nativeRow: photo.row - 1, nativeRowOff: Math.round((h - ih) / 2) * EMU } as unknown as ExcelJS.Anchor,
+      ext: { width: iw, height: ih },
       editAs: 'oneCell',
       hyperlinks: { hyperlink: photo.url, tooltip: 'Open in Field Goose' },
     });
   }
 
-  ws.views = [{ state: 'normal', showGridLines: false }];
+  ws.views = [{ state: 'normal', ...ws.views[0], showGridLines: false } as ExcelJS.WorksheetView];
   const border: Partial<ExcelJS.Borders> = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
   const cols = ws.columnCount;
   for (let r = 1; r <= ws.rowCount; r++) {
