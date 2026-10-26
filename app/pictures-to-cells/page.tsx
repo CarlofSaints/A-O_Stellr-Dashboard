@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import PicturesToCells from '@/components/pictures-to-cells/PicturesToCells';
+import { userIdHeader } from '@/lib/apiFetch';
 
 export default function PicturesToCellsPage() {
   const router = useRouter();
@@ -43,7 +44,7 @@ export default function PicturesToCellsPage() {
         </div>
       </header>
       <main className="w-full px-6 py-6">
-        <PicturesToCells imageUrl={url => `/api/image?url=${encodeURIComponent(url)}`} />
+        <PicturesToCells imageUrl={url => `/api/image?url=${encodeURIComponent(url)}`} logApi="/api/pictures-to-cells" headers={userIdHeader} />
       </main>
     </div>
   );

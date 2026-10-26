@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Photo, Thumb } from './core';
+import type { LogEntry } from './server';
 
 // Chrome/Edge folder access. Not in TypeScript's DOM lib yet.
 type DirHandle = FileSystemDirectoryHandle & {
@@ -56,8 +57,49 @@ type Mode = 'folder' | 'excel';
 /**
  * Pictures to Cells. `imageUrl` turns a Field Goose link into one this app can fetch
  * (FG sends no CORS headers, so it must go through the app's own image proxy).
+ * `logApi` is the route mounting server.ts's logRoute; `access` must match that app's Blob store;
+ * `headers` carries the app's sign-in to it.
  */
-export default function PicturesToCells({ imageUrl, accent = '#1B3A6B' }: { imageUrl: (url: string) => string; accent?: string }) {
+export default function PicturesToCells({ imageUrl, logApi, access = 'private', headers = () => ({}), accent = '#1B3A6B' }: {
+  imageUrl: (url: string) => string;
+  logApi: string;
+  access?: 'public' | 'private';
+  headers?: () => Record<string, string>;
+  accent?: string;
+}) {
+  const [log, setLog] = useState<LogEntry[] | null>(null);
+  const [logError, setLogError] = useState('');
+  // Pages pass a fresh function each render; a ref keeps loadLog from re-running every render.
+  const headersRef = useRef(headers);
+  headersRef.current = headers;
+
+  const loadLog = useCallback(async () => {
+    try {
+      const res = await fetch(logApi, { headers: headersRef.current(), cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setLog(await res.json());
+      setLogError('');
+    } catch (e) {
+      setLogError(`Could not load the log (${e instanceof Error ? e.message : e}).`);
+    }
+  }, [logApi]);
+
+  useEffect(() => { loadLog(); }, [loadLog]);
+
+  async function downloadExcel(entry: LogEntry) {
+    try {
+      const res = await fetch(`${logApi}?file=${encodeURIComponent(entry.excelPath!)}`, { headers: headersRef.current() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(await res.blob());
+      a.download = entry.excelName || 'pictures.xlsx';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    } catch (e) {
+      setLogError(`Could not download that file (${e instanceof Error ? e.message : e}).`);
+    }
+  }
+
   const [file, setFile] = useState<File | null>(null);
   const [mode, setMode] = useState<Mode>('excel');
   const [rowHeight, setRowHeight] = useState(100);
@@ -134,15 +176,43 @@ export default function PicturesToCells({ imageUrl, accent = '#1B3A6B' }: { imag
       }));
 
       let excelName = '';
+      let excelBuf: ArrayBuffer | null = null;
       if (mode === 'excel') {
         setStatus('Building the Excel file…');
         core.buildWorkbook(wb, ws, p, thumbs, sizes);
         excelName = `${file.name.replace(/\.xlsx$/i, '')} - pictures.xlsx`;
-        await writeFile(out, excelName, await wb.xlsx.writeBuffer() as ArrayBuffer);
+        excelBuf = await wb.xlsx.writeBuffer() as ArrayBuffer;
+        await writeFile(out, excelName, excelBuf);
       }
       setFailed(bad);
-      setStatus(`Done. ${p.photos.length - bad.length} of ${p.photos.length} pictures saved to "${dir.name}\\${p.folderName}"` +
-        (excelName ? `, with "${excelName}".` : '.'));
+      // The browser only knows the chosen folder's name, not its full path on the PC.
+      const path = `${dir.name}\\${p.folderName}`;
+      const saved = p.photos.length - bad.length;
+      const summary = `Done. ${saved} of ${p.photos.length} pictures saved to "${path}"` + (excelName ? `, with "${excelName}".` : '.');
+
+      // Log the run. The files are already saved, so a log failure is reported, never thrown.
+      setStatus(excelBuf ? 'Saving a copy of the Excel file for the log…' : 'Logging the run…');
+      try {
+        let excelPath = '';
+        if (excelBuf) {
+          const { upload } = await import('@vercel/blob/client');
+          const xlsx = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+          excelPath = (await upload(`pictures-to-cells/files/${excelName}`, new Blob([excelBuf], { type: xlsx }), {
+            access, contentType: xlsx, handleUploadUrl: logApi, headers: headersRef.current(),
+          })).pathname;
+        }
+        const res = await fetch(logApi, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headersRef.current() },
+          body: JSON.stringify({ mode, path, photos: p.photos.length, saved, excelPath, excelName }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setStatus(summary);
+        loadLog();
+      } catch (e) {
+        setStatus(summary);
+        setError(`The files are saved, but the run could not be logged (${e instanceof Error ? e.message : e}).`);
+      }
     } catch (e) {
       setStatus('');
       setError(e instanceof Error ? e.message : String(e));
@@ -154,6 +224,7 @@ export default function PicturesToCells({ imageUrl, accent = '#1B3A6B' }: { imag
   const input = 'border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2';
 
   return (
+    <div className="space-y-6">
     <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5 max-w-3xl">
       <div>
         <h2 className="text-lg font-bold" style={{ color: accent }}>Pictures to Cells</h2>
@@ -224,6 +295,47 @@ export default function PicturesToCells({ imageUrl, accent = '#1B3A6B' }: { imag
           <ul className="list-disc ml-5">{failed.map(f => <li key={f.fileName}>{f.fileName}</li>)}</ul>
         </div>
       )}
+    </div>
+
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-3">
+      <h2 className="text-base font-bold" style={{ color: accent }}>Log</h2>
+      {logError && <p className="text-sm text-red-600">{logError}</p>}
+      {log === null && !logError && <p className="text-sm text-gray-400">Loading…</p>}
+      {log?.length === 0 && <p className="text-sm text-gray-400">No runs yet.</p>}
+      {!!log?.length && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-gray-500 border-b border-gray-200">
+                <th className="py-2 pr-4 font-medium">Date</th>
+                <th className="py-2 pr-4 font-medium">User</th>
+                <th className="py-2 pr-4 font-medium">Downloaded</th>
+                <th className="py-2 pr-4 font-medium">Path</th>
+                <th className="py-2 font-medium">Excel file</th>
+              </tr>
+            </thead>
+            <tbody>
+              {log.map(e => (
+                <tr key={e.at + e.user} className="border-b border-gray-100 align-top">
+                  <td className="py-2 pr-4 whitespace-nowrap">{new Date(e.at).toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}</td>
+                  <td className="py-2 pr-4">{e.user}</td>
+                  <td className="py-2 pr-4 whitespace-nowrap">
+                    {e.mode === 'excel' ? 'Images and Excel' : 'Images only'}
+                    <span className="text-gray-400"> ({e.saved} of {e.photos})</span>
+                  </td>
+                  <td className="py-2 pr-4 break-all">{e.path}</td>
+                  <td className="py-2">
+                    {e.excelPath
+                      ? <button type="button" onClick={() => downloadExcel(e)} className="font-semibold underline" style={{ color: accent }}>Download</button>
+                      : <span className="text-gray-400">None</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
     </div>
   );
 }
