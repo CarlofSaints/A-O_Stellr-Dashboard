@@ -33,6 +33,18 @@ const isFile = (p: string) => p.startsWith(FILES) && !p.includes('..');
 export function logRoute(opts: { access: 'public' | 'private'; user: (req: Request) => Promise<string | null> }) {
   const deny = () => Response.json({ error: 'Unauthorized' }, { status: 401 });
 
+  /** Read a stored blob by its URL. A public store answers get() with 400, so it is fetched plainly. */
+  async function open(url: string): Promise<Response> {
+    if (opts.access === 'public') {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      return r;
+    }
+    const r = await get(url, { access: 'private', useCache: false });
+    if (!r || r.statusCode !== 200) throw new Error(`status ${r?.statusCode ?? 404}`);
+    return new Response(r.stream, { headers: { 'Content-Type': r.blob.contentType } });
+  }
+
   async function POST(req: Request) {
     const body = await req.json() as Record<string, unknown>;
     const user = await opts.user(req);
@@ -78,9 +90,9 @@ export function logRoute(opts: { access: 'public' | 'private'; user: (req: Reque
       if (!isFile(file)) return Response.json({ error: 'Bad path' }, { status: 400 });
       // Read by the URL list() gives, not a URL rebuilt from the pathname.
       const match = (await list({ prefix: file, limit: 1 })).blobs.find(b => b.pathname === file);
-      const blob = match && await get(match.url, { access: opts.access });
-      if (!blob || blob.statusCode !== 200) return Response.json({ error: 'File not found' }, { status: 404 });
-      return new Response(blob.stream, { headers: { 'Content-Type': blob.blob.contentType ?? 'application/octet-stream' } });
+      if (!match) return Response.json({ error: 'File not found' }, { status: 404 });
+      const r = await open(match.url);
+      return new Response(r.body, { headers: { 'Content-Type': r.headers.get('content-type') ?? 'application/octet-stream' } });
     }
     // shortcut: reads the first 1000 log blobs only; page with `cursor` past ~1000 runs.
     const { blobs } = await list({ prefix: LOG, limit: 1000 });
@@ -88,9 +100,7 @@ export function logRoute(opts: { access: 'public' | 'private'; user: (req: Reque
     const failures: string[] = [];
     const entries = await Promise.all(newest.map(async b => {
       try {
-        const r = await get(b.url, { access: opts.access, useCache: false });
-        if (!r || r.statusCode !== 200) throw new Error(`status ${r?.statusCode ?? 404}`);
-        return JSON.parse(await new Response(r.stream).text()) as LogEntry;
+        return await (await open(b.url)).json() as LogEntry;
       } catch (e) {
         failures.push(`${b.pathname}: ${e instanceof Error ? e.message : e}`);
         return null;
