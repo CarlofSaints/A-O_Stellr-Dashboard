@@ -35,14 +35,17 @@ async function writeFile(dir: FileSystemDirectoryHandle, name: string, data: Blo
 /** Downscale a photo to fit the cell (2x for sharpness) so the workbook stays small. */
 async function thumb(blob: Blob, box: { w: number; h: number }): Promise<Thumb> {
   const img = await createImageBitmap(blob);
-  const scale = Math.min(1, (box.w * 2) / img.width, (box.h * 2) / img.height);
+  // Canvas is the cell's shape, photo centred on white: the picture covers the whole cell
+  // (and the link text under it) without stretching or cropping the photo.
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(img.width * scale);
-  canvas.height = Math.round(img.height * scale);
+  canvas.width = box.w * 2;
+  canvas.height = box.h * 2;
+  const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
+  const dw = img.width * scale, dh = img.height * scale;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#fff'; // JPEG has no transparency: a transparent PNG signature would go black
+  ctx.fillStyle = '#fff'; // also stops a transparent PNG going black as JPEG
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
   img.close();
   const out = await new Promise<Blob>((res, rej) => canvas.toBlob(b => (b ? res(b) : rej(new Error('resize failed'))), 'image/jpeg', 0.85));
   return { buffer: await out.arrayBuffer(), width: canvas.width, height: canvas.height };

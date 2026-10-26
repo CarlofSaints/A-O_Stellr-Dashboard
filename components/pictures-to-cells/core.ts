@@ -60,7 +60,8 @@ export function plan(ws: ExcelJS.Worksheet): Plan {
     const field = (f: string) => cellText(row.getCell(header.get(f)!).value);
     const date = isoDate(row.getCell(header.get('Date')!).value);
     if (date) dates.push(date);
-    const base = safeName([field('Last Name'), field('Customer'), field('Channel'), field('Store'), date].join('_'));
+    // Store first so sorting the folder by name groups each store's photos together.
+    const base = safeName([field('Store'), field('Last Name'), field('Customer'), field('Channel'), date].join('_'));
     row.eachCell((c, col) => {
       const url = photoUrl(c.value);
       if (!url) return;
@@ -86,11 +87,12 @@ export const cellPx = (s: Sizes) => ({ w: Math.round(s.colWidth * 7 + 5), h: Mat
 /** Put each thumb over its cell, link it to the FG photo, then format the sheet. */
 export function buildWorkbook(wb: ExcelJS.Workbook, ws: ExcelJS.Worksheet, p: Plan, thumbs: Map<Photo, Thumb>, sizes: Sizes) {
   const { w, h } = cellPx(sizes);
-  const pad = 4;
+  const pad = 2;
   for (const col of p.photoCols) ws.getColumn(col).width = sizes.colWidth;
   for (const photo of p.photos) {
     // The link stays in the cell too, so it still works if the picture is deleted.
     ws.getCell(photo.row, photo.col).value = { text: photo.url, hyperlink: photo.url };
+    ws.getCell(photo.row, photo.col).font = { color: { argb: 'FFFFFFFF' } }; // hidden behind the picture, no peeking edges
     ws.getRow(photo.row).height = sizes.rowHeight;
     const t = thumbs.get(photo);
     if (!t) continue;
