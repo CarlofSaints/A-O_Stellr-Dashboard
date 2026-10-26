@@ -64,7 +64,15 @@ export default function PicturesToCells({ imageUrl, accent = '#1B3A6B' }: { imag
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [failed, setFailed] = useState<Photo[]>([]);
+  const [dragging, setDragging] = useState(false);
   const supported = typeof window !== 'undefined' && !!window.showDirectoryPicker;
+
+  function pickFile(f: File | undefined) {
+    if (!f) return;
+    if (!/\.xlsx$/i.test(f.name)) { setError('That is not an Excel (.xlsx) file.'); return; }
+    setError(''); setStatus(''); setFailed([]);
+    setFile(f);
+  }
 
   useEffect(() => {
     idb<DirHandle | undefined>(s => s.get('dir')).then(h => h && setDir(h)).catch(() => {});
@@ -153,13 +161,26 @@ export default function PicturesToCells({ imageUrl, accent = '#1B3A6B' }: { imag
         <p className="text-sm text-red-600">This needs Google Chrome or Microsoft Edge (other browsers can&apos;t save into a folder).</p>
       )}
 
-      <label className="block">
+      <div>
         <span className="block text-xs font-medium text-gray-500 mb-1">1. Field Goose Excel export</span>
-        <input type="file" accept=".xlsx" onChange={e => setFile(e.target.files?.[0] ?? null)} className="text-sm" />
-      </label>
+        <label
+          onDragOver={e => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={e => { e.preventDefault(); setDragging(false); pickFile(e.dataTransfer.files[0]); }}
+          className={`flex flex-col items-center justify-center gap-1 border-2 border-dashed rounded-xl px-4 py-8 text-center cursor-pointer transition-colors ${dragging ? 'bg-blue-50 border-blue-400' : 'border-gray-300 hover:bg-gray-50'}`}
+        >
+          <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.9A5 5 0 1115.9 6h.1a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+          </svg>
+          {file
+            ? <span className="text-sm font-semibold" style={{ color: accent }}>{file.name} <span className="font-normal text-gray-400">(click or drop to change)</span></span>
+            : <span className="text-sm text-gray-600"><span className="font-semibold" style={{ color: accent }}>Click to choose</span> or drag and drop the Excel file here</span>}
+          <input type="file" accept=".xlsx" onChange={e => pickFile(e.target.files?.[0])} className="sr-only" />
+        </label>
+      </div>
 
       <div>
-        <span className="block text-xs font-medium text-gray-500 mb-1">2. Save into this folder (remembered for next time)</span>
+        <span className="block text-xs font-medium text-gray-500 mb-1">2. Save into this folder (remembered for next time). Works in Google Chrome or Microsoft Edge only.</span>
         <div className="flex gap-2">
           <input readOnly value={dir?.name ?? ''} placeholder="No folder chosen" className={`${input} flex-1`} />
           <button type="button" onClick={chooseFolder} disabled={!supported || busy}
