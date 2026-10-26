@@ -39,7 +39,10 @@ async function thumb(blob: Blob, box: { w: number; h: number }): Promise<Thumb> 
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(img.width * scale);
   canvas.height = Math.round(img.height * scale);
-  canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#fff'; // JPEG has no transparency: a transparent PNG signature would go black
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   img.close();
   const out = await new Promise<Blob>((res, rej) => canvas.toBlob(b => (b ? res(b) : rej(new Error('resize failed'))), 'image/jpeg', 0.85));
   return { buffer: await out.arrayBuffer(), width: canvas.width, height: canvas.height };
@@ -94,7 +97,9 @@ export default function PicturesToCells({ imageUrl, accent = '#1B3A6B' }: { imag
       const p = core.plan(ws);
       if (!p.photos.length) throw new Error('No Field Goose photo links found in this file.');
       const out = await dir.getDirectoryHandle(p.folderName, { create: true });
-      const box = core.cellPx({ rowHeight, colWidth });
+      // Excel caps row height at 409 pt and column width at 255.
+      const sizes = { rowHeight: Math.min(409, Math.max(20, rowHeight || 100)), colWidth: Math.min(255, Math.max(5, colWidth || 30)) };
+      const box = core.cellPx(sizes);
 
       const thumbs = new Map<Photo, Thumb>();
       const bad: Photo[] = [];
@@ -107,6 +112,7 @@ export default function PicturesToCells({ imageUrl, accent = '#1B3A6B' }: { imag
             const res = await fetch(imageUrl(photo.url));
             if (!res.ok) throw new Error(String(res.status));
             const blob = await res.blob();
+            if (!blob.type.startsWith('image/')) throw new Error('not a picture');
             await writeFile(out, photo.fileName, blob);
             if (mode === 'excel') thumbs.set(photo, await thumb(blob, box));
           } catch {
@@ -119,7 +125,7 @@ export default function PicturesToCells({ imageUrl, accent = '#1B3A6B' }: { imag
       let excelName = '';
       if (mode === 'excel') {
         setStatus('Building the Excel file…');
-        core.buildWorkbook(wb, ws, p, thumbs, { rowHeight, colWidth });
+        core.buildWorkbook(wb, ws, p, thumbs, sizes);
         excelName = `${file.name.replace(/\.xlsx$/i, '')} - pictures.xlsx`;
         await writeFile(out, excelName, await wb.xlsx.writeBuffer() as ArrayBuffer);
       }
@@ -167,11 +173,11 @@ export default function PicturesToCells({ imageUrl, accent = '#1B3A6B' }: { imag
       <div className="flex gap-4">
         <label>
           <span className="block text-xs font-medium text-gray-500 mb-1">Row height</span>
-          <input type="number" min={20} max={409} value={rowHeight} onChange={e => setRowHeight(Number(e.target.value) || 100)} className={`${input} w-28`} />
+          <input type="number" min={20} max={409} value={rowHeight || ''} onChange={e => setRowHeight(Number(e.target.value))} className={`${input} w-28`} />
         </label>
         <label>
           <span className="block text-xs font-medium text-gray-500 mb-1">Column width</span>
-          <input type="number" min={5} max={255} value={colWidth} onChange={e => setColWidth(Number(e.target.value) || 30)} className={`${input} w-28`} />
+          <input type="number" min={5} max={255} value={colWidth || ''} onChange={e => setColWidth(Number(e.target.value))} className={`${input} w-28`} />
         </label>
       </div>
 
