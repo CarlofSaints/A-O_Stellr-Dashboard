@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
+import SideNav from '@/components/SideNav';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1340,6 +1341,7 @@ export default function VisitReportPage() {
       <header className="bg-white border-b border-gray-200 px-6 py-3 shadow-sm">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
+            <SideNav />
             <Image
               src="/ao-logo.png" alt="A&O" width={72} height={36} className="object-contain"
               onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
