@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import PicturesToCells from '@/components/pictures-to-cells/PicturesToCells';
 import { userIdHeader } from '@/lib/apiFetch';
+import SideNav from '@/components/SideNav';
 
 export default function PicturesToCellsPage() {
   const router = useRouter();
@@ -23,6 +24,7 @@ export default function PicturesToCellsPage() {
       <header className="bg-white border-b border-gray-200 px-6 py-3 shadow-sm">
         <div className="w-full flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
+            <SideNav />
             <Image src="/ao-logo.png" alt="A&O" width={72} height={36} className="object-contain" />
             <div>
               <h1 className="text-base font-bold leading-tight text-[#1B3A6B]">A&O Interactive Services</h1>

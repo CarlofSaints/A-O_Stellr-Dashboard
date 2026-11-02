@@ -5,6 +5,7 @@ import { apiFetch } from '@/lib/apiFetch';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import type { FormType, VisitRow, LoadedFile, SignatureRecord } from '@/lib/types';
+import SideNav from '@/components/SideNav';
 
 // ─── Multi-select dropdown with search ───────────────────────────────────────
 
@@ -626,6 +627,7 @@ export default function PdfDownloadPage() {
       <header className="bg-[#1B3A6B] text-white px-6 py-4 shadow-md">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
+            <SideNav />
             <Image src="/ao-logo.png" alt="A&O" width={60} height={30} className="object-contain brightness-200" />
             <div>
               <h1 className="text-base font-bold">Download Form PDF</h1>

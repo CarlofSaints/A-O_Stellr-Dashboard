@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/apiFetch';
+import SideNav from '@/components/SideNav';
 
 interface Session {
   id: string;
@@ -314,9 +315,12 @@ export default function AdminSettingsPage() {
       {/* Header */}
       <header className="bg-[#1B3A6B] text-white px-6 py-4 shadow-md">
         <div className="max-w-3xl mx-auto flex items-center justify-between">
-          <div>
+          <div className="flex items-center gap-3">
+            <SideNav />
+            <div>
             <h1 className="text-base font-bold">API Settings</h1>
             <p className="text-blue-200 text-xs">Perigee API Configuration</p>
+            </div>
           </div>
           <button onClick={() => router.push('/')} className="text-blue-200 hover:text-white text-sm flex items-center gap-1.5 transition-colors">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
