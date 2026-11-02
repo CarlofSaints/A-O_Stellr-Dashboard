@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireUser, requireAdmin, unauthorized } from '@/lib/auth';
 import { fetchSpFile, uploadSpFile, deleteSpFile } from '@/lib/graph-oj';
 import type { FormType, LoadedFile } from '@/lib/types';
-import { normaliseFile } from '@/lib/photoUrl';
+import { normaliseFile, normaliseCell } from '@/lib/photoUrl';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -106,29 +106,53 @@ interface DedupeResult {
    *  used to happen in silence: no filename in the list, no error, `added: 0`.
    *  A whole upload could disappear and the only clue was a "0 new" note. */
   emptied: { fileName: string; rows: number }[];
+  /** Held rows whose dead Perigee photo links were swapped for the incoming
+   *  Field Goose links (same visit re-exported from FG after Perigee shut). */
+  refreshedRows: number;
+}
+
+const PERIGEE = /^https?:\/\/live\.perigeeportal\.co\.za\//;
+
+/** Swap each dead Perigee link in `held` for the same column's FG link in `incoming`. */
+function refreshPhotoLinks(held: Record<string, unknown>, incoming: Record<string, unknown>): boolean {
+  let changed = false;
+  for (const k in held) {
+    if (typeof held[k] !== 'string' || !PERIGEE.test(held[k] as string)) continue;
+    const v = normaliseCell(incoming[k]);
+    if (typeof v === 'string' && v.startsWith('https://www.fieldgoose.com/')) {
+      held[k] = v;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 function dedupeRows(existing: LoadedFile[], incoming: LoadedFile[]): DedupeResult {
-  const seen = new Set(
-    existing.flatMap(f => {
-      const ft = f.formType ?? 'merch';
-      return f.rows.map(r => {
-        const uuid = String(r['Visit UUID'] ?? '').trim();
-        return uuid ? `${uuid}|${ft}` : '';
-      });
-    }).filter(Boolean)
-  );
+  // key -> the held row, so a duplicate can still heal its photo links
+  const seen = new Map<string, Record<string, unknown> | null>();
+  for (const f of existing) {
+    const ft = f.formType ?? 'merch';
+    for (const r of f.rows) {
+      const uuid = String(r['Visit UUID'] ?? '').trim();
+      if (uuid && !seen.has(`${uuid}|${ft}`)) seen.set(`${uuid}|${ft}`, r);
+    }
+  }
   const result: LoadedFile[] = [];
   const emptied: DedupeResult['emptied'] = [];
   let skippedRows = 0;
+  let refreshedRows = 0;
   for (const file of incoming) {
     const ft = file.formType ?? 'merch';
     const filtered = file.rows.filter(r => {
       const uuid = String(r['Visit UUID'] ?? '').trim();
       if (!uuid) return true;
       const key = `${uuid}|${ft}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
+      if (seen.has(key)) {
+        const held = seen.get(key);
+        if (held && refreshPhotoLinks(held, r)) refreshedRows++;
+        return false;
+      }
+      seen.set(key, null);
       return true;
     });
     skippedRows += file.rows.length - filtered.length;
@@ -138,7 +162,7 @@ function dedupeRows(existing: LoadedFile[], incoming: LoadedFile[]): DedupeResul
       emptied.push({ fileName: file.fileName, rows: file.rows.length });
     }
   }
-  return { files: result, skippedRows, emptied };
+  return { files: result, skippedRows, emptied, refreshedRows };
 }
 
 // ─── Migration from legacy single-file cache ────────────────────────────────
@@ -282,14 +306,14 @@ export async function POST(req: NextRequest) {
     const existingFiles = existing?.files ?? [];
 
     // 2. Merge — deduplicate by Visit UUID
-    const { files: newFiles, skippedRows, emptied } = dedupeRows(existingFiles, files);
+    const { files: newFiles, skippedRows, emptied, refreshedRows } = dedupeRows(existingFiles, files);
     const mergedFiles = [...existingFiles, ...newFiles];
 
     // Say what happened in the runtime log — an upload that stores nothing is
     // otherwise indistinguishable from one that was never sent.
     const addedRows = newFiles.reduce((s, f) => s + f.rowCount, 0);
     console.log(
-      `[sp-cache] ${channel}: +${addedRows} rows, ${skippedRows} already held` +
+      `[sp-cache] ${channel}: +${addedRows} rows, ${skippedRows} already held, ${refreshedRows} photo links refreshed` +
       (emptied.length ? `, DISCARDED ENTIRELY: ${emptied.map(e => `${e.fileName} (${e.rows} rows)`).join(', ')}` : '') +
       ` — by ${updatedBy}`
     );
@@ -333,7 +357,7 @@ export async function POST(req: NextRequest) {
     }
     await uploadSpFile(indexPath(), JSON.stringify(idx));
 
-    return NextResponse.json({ ok: true, added: addedRows, skipped: skippedRows, emptied });
+    return NextResponse.json({ ok: true, added: addedRows, skipped: skippedRows, emptied, refreshed: refreshedRows });
   } catch (err) {
     console.error('SP cache POST error:', err);
     return NextResponse.json({ error: 'Cache save failed' }, { status: 500 });
